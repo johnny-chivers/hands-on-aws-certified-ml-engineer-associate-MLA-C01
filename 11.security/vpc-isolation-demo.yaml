@@ -1,0 +1,631 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  VPC Isolation and Network Security for SageMaker ML Workloads
+  Maps to MLA-C01 Domain 4: Security and Governance
+
+  Network Architecture:
+  - VPC with private and public subnets
+  - NAT Gateway for controlled outbound traffic
+  - VPC Endpoints for AWS services (no internet exposure)
+  - Security Groups with least-privilege rules
+  - Network ACLs for additional layer of protection
+
+  Benefits:
+  - Data never leaves VPC (except to AWS services via endpoints)
+  - No internet exposure of ML resources
+  - Encrypted communication via HTTPS (port 443)
+  - Audit trail of all network traffic
+  - Compliance with data residency requirements
+
+Parameters:
+  VpcCIDR:
+    Type: String
+    Description: CIDR block for VPC
+    Default: 10.0.0.0/16
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+
+  PublicSubnet1CIDR:
+    Type: String
+    Description: CIDR block for public subnet 1 (NAT Gateway)
+    Default: 10.0.1.0/24
+
+  PublicSubnet2CIDR:
+    Type: String
+    Description: CIDR block for public subnet 2 (AZ failover)
+    Default: 10.0.2.0/24
+
+  PrivateSubnet1CIDR:
+    Type: String
+    Description: CIDR block for private subnet 1 (SageMaker resources)
+    Default: 10.0.10.0/24
+
+  PrivateSubnet2CIDR:
+    Type: String
+    Description: CIDR block for private subnet 2 (AZ failover)
+    Default: 10.0.11.0/24
+
+Resources:
+  # ─────────────────────────────────────────────────────────────
+  # VPC and Subnets
+  # ─────────────────────────────────────────────────────────────
+
+  MLVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: ml-vpc
+        - Key: Environment
+          Value: Production
+
+  # Public Subnets (NAT Gateway here)
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MLVPC
+      CidrBlock: !Ref PublicSubnet1CIDR
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MLVPC
+      CidrBlock: !Ref PublicSubnet2CIDR
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-2
+
+  # Private Subnets (SageMaker resources)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MLVPC
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: private-subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MLVPC
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: private-subnet-2
+
+  # ─────────────────────────────────────────────────────────────
+  # Internet Gateway and NAT Gateway
+  # ─────────────────────────────────────────────────────────────
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ml-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MLVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Elastic IP for NAT Gateway
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: nat-eip
+
+  # NAT Gateway (for controlled outbound from private subnets)
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: ml-nat-gateway
+
+  # ─────────────────────────────────────────────────────────────
+  # Route Tables
+  # ─────────────────────────────────────────────────────────────
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MLVPC
+      Tags:
+        - Key: Name
+          Value: public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # Private Route Table (routes through NAT Gateway)
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MLVPC
+      Tags:
+        - Key: Name
+          Value: private-rt
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ─────────────────────────────────────────────────────────────
+  # Security Groups
+  # ─────────────────────────────────────────────────────────────
+
+  # Security Group for SageMaker Resources
+  SageMakerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: sagemaker-sg
+      GroupDescription: Security group for SageMaker training/notebook instances
+      VpcId: !Ref MLVPC
+      SecurityGroupIngress:
+        # Allow HTTPS from VPC CIDR (for VPC endpoints)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCIDR
+          Description: HTTPS from VPC endpoints
+      SecurityGroupEgress:
+        # Allow HTTPS outbound to VPC CIDR (for VPC endpoints)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCIDR
+          Description: HTTPS to VPC endpoints
+        # Allow outbound to NAT Gateway for internet access
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS outbound for package downloads
+      Tags:
+        - Key: Name
+          Value: sagemaker-sg
+
+  # Security Group for VPC Endpoints
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: vpc-endpoints-sg
+      GroupDescription: Security group for VPC endpoints
+      VpcId: !Ref MLVPC
+      SecurityGroupIngress:
+        # Allow HTTPS from SageMaker resources
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref SageMakerSecurityGroup
+          Description: HTTPS from SageMaker
+        # Allow HTTPS from VPC CIDR (internal communication)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref VpcCIDR
+          Description: HTTPS from VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: vpc-endpoints-sg
+
+  # ─────────────────────────────────────────────────────────────
+  # VPC Endpoints (Gateway and Interface)
+  # ─────────────────────────────────────────────────────────────
+
+  # S3 Gateway Endpoint (no internet exposure)
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MLVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - arn:aws:s3:::*
+              - arn:aws:s3:::*/*
+      Tags:
+        - Key: Name
+          Value: s3-endpoint
+
+  # SageMaker API Interface Endpoint
+  SageMakerAPIEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MLVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sagemaker.api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - sagemaker:*
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: sagemaker-api-endpoint
+
+  # SageMaker Runtime Interface Endpoint
+  SageMakerRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MLVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sagemaker.runtime"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - sagemaker:InvokeEndpoint
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: sagemaker-runtime-endpoint
+
+  # CloudWatch Logs Interface Endpoint
+  CloudWatchLogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MLVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource: "arn:aws:logs:*:*:*"
+      Tags:
+        - Key: Name
+          Value: cloudwatch-logs-endpoint
+
+  # ECR API Interface Endpoint (for custom containers)
+  ECRAPIEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MLVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - ecr:GetDownloadUrlForLayer
+              - ecr:BatchGetImage
+              - ecr:GetAuthorizationToken
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ecr-api-endpoint
+
+  # ECR DKR (Docker) Interface Endpoint
+  ECRDKREndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MLVPC
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ecr-dkr-endpoint
+
+  # ─────────────────────────────────────────────────────────────
+  # Network ACLs (Additional Security Layer)
+  # ─────────────────────────────────────────────────────────────
+
+  PrivateNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref MLVPC
+      Tags:
+        - Key: Name
+          Value: private-nacl
+
+  # Inbound: Allow HTTPS from VPC
+  PrivateNACLInboundHTTPS:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: 100
+      Protocol: 6  # TCP
+      RuleAction: allow
+      CidrBlock: !Ref VpcCIDR
+      PortRange:
+        FromPort: 443
+        ToPort: 443
+
+  # Inbound: Allow ephemeral ports for return traffic
+  PrivateNACLInboundEphemeral:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        FromPort: 1024
+        ToPort: 65535
+
+  # Outbound: Allow HTTPS to VPC (endpoints)
+  PrivateNACLOutboundHTTPS:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: 100
+      Protocol: 6
+      Egress: true
+      RuleAction: allow
+      CidrBlock: !Ref VpcCIDR
+      PortRange:
+        FromPort: 443
+        ToPort: 443
+
+  # Outbound: Allow HTTPS to internet (NAT Gateway)
+  PrivateNACLOutboundInternet:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      RuleNumber: 110
+      Protocol: 6
+      Egress: true
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        FromPort: 443
+        ToPort: 443
+
+  # ─────────────────────────────────────────────────────────────
+  # Monitoring and Logging
+  # ─────────────────────────────────────────────────────────────
+
+  VPCFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchLogPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  VPCFlowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/vpc/flowlogs/ml-vpc
+      RetentionInDays: 30
+
+  VPCFlowLogs:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref MLVPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref VPCFlowLogsGroup
+      DeliverLogsPermissionIAM: !GetAtt VPCFlowLogsRole.Arn
+      Tags:
+        - Key: Name
+          Value: vpc-flow-logs
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref MLVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCId"
+
+  PrivateSubnet1Id:
+    Description: Private Subnet 1 ID
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet1Id"
+
+  PrivateSubnet2Id:
+    Description: Private Subnet 2 ID
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet2Id"
+
+  SageMakerSecurityGroupId:
+    Description: Security Group ID for SageMaker resources
+    Value: !Ref SageMakerSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerSGId"
+
+  S3EndpointId:
+    Description: S3 Gateway VPC Endpoint ID
+    Value: !Ref S3Endpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-S3EndpointId"
+
+  SageMakerAPIEndpointId:
+    Description: SageMaker API Interface VPC Endpoint ID
+    Value: !Ref SageMakerAPIEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerAPIEndpointId"
+
+  NetworkArchitecture:
+    Description: VPC Network Architecture Summary
+    Value: |
+      NETWORK ISOLATION ARCHITECTURE:
+
+      Internet
+         ↓
+      [Public Subnets]
+      ├─ NAT Gateway (Elastic IP)
+      └─ Internet Gateway
+
+      [Private Subnets] ← SageMaker Resources
+      ├─ Training Jobs (ml.m5.xlarge)
+      ├─ Processing Jobs (ml.m5.xlarge)
+      ├─ Notebook Instances
+      └─ Model Hosting Endpoints
+
+      ↓ (HTTPS only, no internet exposure)
+
+      [VPC Endpoints]
+      ├─ S3 Gateway Endpoint
+      ├─ SageMaker API Endpoint
+      ├─ SageMaker Runtime Endpoint
+      ├─ CloudWatch Logs Endpoint
+      ├─ ECR API Endpoint
+      └─ ECR DKR Endpoint
+
+      ↓ (for external packages/updates)
+
+      [NAT Gateway]
+      ↓
+      [Internet Gateway]
+      ↓
+      Internet
+
+      SECURITY FEATURES:
+      ✓ Private subnets: No direct internet access
+      ✓ VPC endpoints: No internet exposure for AWS services
+      ✓ NAT Gateway: Controlled outbound access
+      ✓ Security Groups: Port 443 only (HTTPS)
+      ✓ Network ACLs: Additional filtering layer
+      ✓ VPC Flow Logs: Audit all network traffic
+      ✓ Private DNS: Seamless endpoint resolution
+
+Tags:
+  - Key: Environment
+    Value: Production
+  - Key: Service
+    Value: SageMaker
+  - Key: Security
+    Value: NetworkIsolation
+  - Key: Domain
+    Value: MLAExam

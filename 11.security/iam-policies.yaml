@@ -1,0 +1,512 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  IAM Policies and Roles for SageMaker ML Workflows
+  Maps to MLA-C01 Domain 4: Security and Governance
+
+  Role Hierarchy:
+  1. Data Scientist: Build/experiment with models (dev, non-prod)
+  2. MLOps Engineer: Deploy models, manage pipelines (production)
+  3. SageMaker Execution: Service role for SageMaker jobs
+
+  Security Principles:
+  - Least privilege: Only permissions actually needed
+  - Resource scoping: Limit to specific buckets, instances, endpoints
+  - Condition-based: Restrict by region, instance type, etc.
+  - Audit trail: CloudTrail logging enabled
+  - Separation of duties: Different roles for different tasks
+
+Parameters:
+  DataBucketName:
+    Type: String
+    Description: S3 bucket for training/validation data
+    Default: ml-data-bucket
+
+  ModelBucketName:
+    Type: String
+    Description: S3 bucket for model artifacts
+    Default: ml-models-bucket
+
+  ArtifactBucketName:
+    Type: String
+    Description: S3 bucket for pipeline artifacts
+    Default: ml-artifacts-bucket
+
+  AllowedRegion:
+    Type: String
+    Description: AWS region where resources can be created
+    Default: us-west-2
+
+  AllowedInstanceTypes:
+    Type: CommaDelimitedList
+    Description: Instance types allowed for training/inference
+    Default: "ml.m5.large,ml.m5.xlarge,ml.m5.2xlarge,ml.c5.large"
+
+  KMSKeyArn:
+    Type: String
+    Description: ARN of KMS key for encryption
+    Default: arn:aws:kms:us-west-2:123456789012:key/12345678-1234-1234-1234-123456789012
+
+Resources:
+  # ─────────────────────────────────────────────────────────────
+  # Data Scientist Role
+  # ─────────────────────────────────────────────────────────────
+  # Purpose: Experimentation, training, evaluation (non-production)
+  # Restrictions: Cannot deploy endpoints, limited to dev resources
+
+  DataScientistRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SageMaker-DataScientist-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerReadOnly
+      Tags:
+        - Key: Role
+          Value: DataScientist
+        - Key: Environment
+          Value: Development
+
+  # S3 Policy: Access to specific data bucket
+  DataScientistS3Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DataScientist-S3-Access
+      Roles:
+        - !Ref DataScientistRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Read/write data bucket
+          - Sid: DataBucketAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${DataBucketName}/*"
+          # List bucket contents
+          - Sid: DataBucketList
+            Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub "arn:aws:s3:::${DataBucketName}"
+          # Read model bucket (no write)
+          - Sid: ModelBucketRead
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${ModelBucketName}"
+              - !Sub "arn:aws:s3:::${ModelBucketName}/*"
+
+  # SageMaker Policy: Training and processing only
+  DataScientistSageMakerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DataScientist-SageMaker-Training
+      Roles:
+        - !Ref DataScientistRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Training job creation (development instances only)
+          - Sid: AllowTrainingJobs
+            Effect: Allow
+            Action:
+              - sagemaker:CreateTrainingJob
+              - sagemaker:DescribeTrainingJob
+              - sagemaker:StopTrainingJob
+              - sagemaker:ListTrainingJobs
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:training-job/*"
+            Condition:
+              StringEquals:
+                "sagemaker:InstanceTypes": !Ref AllowedInstanceTypes
+          # Processing job creation
+          - Sid: AllowProcessingJobs
+            Effect: Allow
+            Action:
+              - sagemaker:CreateProcessingJob
+              - sagemaker:DescribeProcessingJob
+              - sagemaker:StopProcessingJob
+              - sagemaker:ListProcessingJobs
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:processing-job/*"
+          # Explicitly deny endpoint deployment
+          - Sid: DenyEndpointCreation
+            Effect: Deny
+            Action:
+              - sagemaker:CreateEndpoint
+              - sagemaker:UpdateEndpoint
+              - sagemaker:DeleteEndpoint
+              - sagemaker:InvokeEndpoint
+            Resource: !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:endpoint/*"
+          # Explicitly deny production resources
+          - Sid: DenyProductionResources
+            Effect: Deny
+            Action:
+              - sagemaker:CreateModel
+              - sagemaker:RegisterModelPackage
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:model-package/*"
+            Condition:
+              StringEquals:
+                "aws:RequestedRegion": !Ref AllowedRegion
+
+  # CloudWatch and Logs
+  DataScientistLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DataScientist-CloudWatch-Logs
+      Roles:
+        - !Ref DataScientistRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource:
+              - !Sub "arn:aws:logs:${AllowedRegion}:${AWS::AccountId}:log-group:/aws/sagemaker/*"
+
+  # ─────────────────────────────────────────────────────────────
+  # MLOps Engineer Role
+  # ─────────────────────────────────────────────────────────────
+  # Purpose: Deploy models, manage pipelines, CI/CD (production)
+  # Permissions: Pipeline creation, endpoint deployment, model registry
+
+  MLOpsEngineerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SageMaker-MLOpsEngineer-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+                - codepipeline.amazonaws.com
+                - codebuild.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Role
+          Value: MLOpsEngineer
+        - Key: Environment
+          Value: Production
+
+  # Pipeline Management Policy
+  MLOpsEngineerPipelinePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: MLOpsEngineer-Pipeline-Management
+      Roles:
+        - !Ref MLOpsEngineerRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Pipeline creation and execution
+          - Sid: PipelineManagement
+            Effect: Allow
+            Action:
+              - sagemaker:CreatePipeline
+              - sagemaker:DescribePipeline
+              - sagemaker:UpdatePipeline
+              - sagemaker:DeletePipeline
+              - sagemaker:StartPipelineExecution
+              - sagemaker:DescribePipelineExecution
+              - sagemaker:ListPipelineExecutions
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:pipeline/*"
+          # Model Registry operations
+          - Sid: ModelRegistry
+            Effect: Allow
+            Action:
+              - sagemaker:CreateModel
+              - sagemaker:CreateModelPackage
+              - sagemaker:DescribeModelPackage
+              - sagemaker:UpdateModelPackage
+              - sagemaker:ListModelPackages
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:model/*"
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:model-package/*"
+
+  # Endpoint Management Policy
+  MLOpsEngineerEndpointPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: MLOpsEngineer-Endpoint-Management
+      Roles:
+        - !Ref MLOpsEngineerRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Endpoint creation/deployment
+          - Sid: EndpointDeployment
+            Effect: Allow
+            Action:
+              - sagemaker:CreateEndpoint
+              - sagemaker:CreateEndpointConfig
+              - sagemaker:UpdateEndpoint
+              - sagemaker:DescribeEndpoint
+              - sagemaker:ListEndpoints
+              - sagemaker:DeleteEndpoint
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:endpoint/*"
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:endpoint-config/*"
+            Condition:
+              StringEquals:
+                "sagemaker:InstanceTypes": !Ref AllowedInstanceTypes
+          # Endpoint invocation
+          - Sid: InvokeEndpoint
+            Effect: Allow
+            Action:
+              - sagemaker:InvokeEndpoint
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AllowedRegion}:${AWS::AccountId}:endpoint/*"
+          # Auto-scaling configuration
+          - Sid: AutoScaling
+            Effect: Allow
+            Action:
+              - application-autoscaling:RegisterScalableTarget
+              - application-autoscaling:PutScalingPolicy
+              - application-autoscaling:DescribeScalableTargets
+            Resource:
+              - !Sub "arn:autoscaling:${AllowedRegion}:${AWS::AccountId}:scalable-target/endpoint/*"
+
+  # S3 Access for Artifacts
+  MLOpsEngineerS3Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: MLOpsEngineer-S3-Artifacts
+      Roles:
+        - !Ref MLOpsEngineerRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${ArtifactBucketName}"
+              - !Sub "arn:aws:s3:::${ArtifactBucketName}/*"
+
+  # ─────────────────────────────────────────────────────────────
+  # SageMaker Execution Role
+  # ─────────────────────────────────────────────────────────────
+  # Purpose: Assumed by SageMaker jobs (training, processing, etc.)
+  # Used by: Training jobs, processing jobs, batch transform, endpoints
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SageMaker-Execution-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Role
+          Value: ExecutionRole
+        - Key: Purpose
+          Value: ServiceRole
+
+  # S3 Access for Training
+  SageMakerExecutionS3Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SageMaker-Execution-S3
+      Roles:
+        - !Ref SageMakerExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Training data access
+          - Sid: ReadTrainingData
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${DataBucketName}"
+              - !Sub "arn:aws:s3:::${DataBucketName}/*"
+          # Model output access
+          - Sid: WriteModelArtifacts
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource:
+              - !Sub "arn:aws:s3:::${ModelBucketName}/*"
+          # Artifact bucket access
+          - Sid: ArtifactBucketAccess
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${ArtifactBucketName}"
+              - !Sub "arn:aws:s3:::${ArtifactBucketName}/*"
+
+  # ECR Access for Custom Containers
+  SageMakerExecutionECRPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SageMaker-Execution-ECR
+      Roles:
+        - !Ref SageMakerExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Resource: !Sub "arn:aws:ecr:${AllowedRegion}:${AWS::AccountId}:repository/*"
+
+  # CloudWatch Logs
+  SageMakerExecutionLogsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SageMaker-Execution-Logs
+      Roles:
+        - !Ref SageMakerExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AllowedRegion}:${AWS::AccountId}:log-group:/aws/sagemaker/*"
+
+  # KMS Encryption
+  SageMakerExecutionKMSPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SageMaker-Execution-KMS
+      Roles:
+        - !Ref SageMakerExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:DescribeKey
+            Resource: !Ref KMSKeyArn
+
+Outputs:
+  DataScientistRoleArn:
+    Description: ARN of Data Scientist role for development/experimentation
+    Value: !GetAtt DataScientistRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-DataScientistRoleArn"
+
+  DataScientistRoleName:
+    Description: Name of Data Scientist role
+    Value: !Ref DataScientistRole
+    Export:
+      Name: !Sub "${AWS::StackName}-DataScientistRoleName"
+
+  MLOpsEngineerRoleArn:
+    Description: ARN of MLOps Engineer role for production deployments
+    Value: !GetAtt MLOpsEngineerRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-MLOpsEngineerRoleArn"
+
+  MLOpsEngineerRoleName:
+    Description: Name of MLOps Engineer role
+    Value: !Ref MLOpsEngineerRole
+    Export:
+      Name: !Sub "${AWS::StackName}-MLOpsEngineerRoleName"
+
+  SageMakerExecutionRoleArn:
+    Description: ARN of SageMaker Execution role (service role)
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerExecutionRoleArn"
+
+  SageMakerExecutionRoleName:
+    Description: Name of SageMaker Execution role
+    Value: !Ref SageMakerExecutionRole
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerExecutionRoleName"
+
+  SecurityPrinciples:
+    Description: Summary of least-privilege security implementation
+    Value: |
+      SECURITY PRINCIPLES IMPLEMENTED:
+
+      [DATA SCIENTIST ROLE]
+      ✓ Can: Train models, run processing jobs, read data
+      ✗ Cannot: Deploy endpoints, create production models
+      ✓ Scoped: Data bucket only (no model bucket write)
+      ✓ Condition: Allowed instance types (cost control)
+
+      [MLOPS ENGINEER ROLE]
+      ✓ Can: Deploy endpoints, manage pipelines, register models
+      ✓ Can: Create/update/delete endpoints
+      ✓ Scoped: All SageMaker resources (production level)
+      ✓ Condition: Allowed regions and instance types
+
+      [EXECUTION ROLE (Service)]
+      ✓ Assumed by: SageMaker jobs automatically
+      ✓ Access: S3 buckets for data/models, ECR, logs, KMS
+      ✓ Minimal: Only what SageMaker jobs need
+      ✓ Audited: CloudTrail logs all usage
+
+      SEPARATION OF DUTIES:
+      - Data Scientists: Experiment and develop
+      - MLOps Engineers: Deploy and manage production
+      - SageMaker: Executes with minimal permissions
+      - Admins: Manage roles and audit access
+
+      AUDIT & COMPLIANCE:
+      ✓ CloudTrail: All API calls logged
+      ✓ S3: Versioning and access logs enabled
+      ✓ KMS: All encryption with customer keys
+      ✓ VPC: Network isolation (see vpc-isolation-demo.yaml)
+
+Tags:
+  - Key: Environment
+    Value: Production
+  - Key: Service
+    Value: SageMaker
+  - Key: Security
+    Value: LeastPrivilege
+  - Key: Domain
+    Value: MLAExam

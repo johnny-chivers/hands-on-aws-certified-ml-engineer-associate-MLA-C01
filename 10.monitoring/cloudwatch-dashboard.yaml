@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Comprehensive CloudWatch Dashboard for SageMaker Endpoint Monitoring
+  Maps to MLA-C01 Domain 3: Model Monitoring and Governance
+
+  Widgets included:
+  - Invocations: Request volume tracking
+  - ModelLatency (P50, P99, Average): Response time metrics
+  - OverheadLatency: Container startup overhead
+  - 4XX/5XX Errors: Client and server error rates
+  - CPU/Memory Utilization: Instance resource consumption
+  - Custom Alarms: High latency and error thresholds
+
+Parameters:
+  EndpointName:
+    Type: String
+    Default: ml-endpoint-demo
+    Description: Name of the SageMaker endpoint to monitor
+
+  SNSEmailAddress:
+    Type: String
+    Default: alerts@example.com
+    Description: Email address for CloudWatch alarm notifications
+
+Resources:
+  # ─────────────────────────────────────────────────────────────
+  # SNS Topic for Alarm Notifications
+  # ─────────────────────────────────────────────────────────────
+
+  AlarmNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "sagemaker-endpoint-alarms-${EndpointName}"
+      DisplayName: SageMaker Endpoint Alarms
+      Subscription:
+        - Endpoint: !Ref SNSEmailAddress
+          Protocol: email
+      Tags:
+        - Key: Purpose
+          Value: MLEndpointMonitoring
+        - Key: Endpoint
+          Value: !Ref EndpointName
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Dashboard
+  # ─────────────────────────────────────────────────────────────
+
+  MLEndpointDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "SageMaker-${EndpointName}-Dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 1,
+              "properties": {
+                "markdown": "# SageMaker Endpoint Monitoring: ${EndpointName}\n**Region:** ${AWS::Region} | **Account:** ${AWS::AccountId} | **Updated:** *Last 24 hours*"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 1,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SageMaker", "Invocations", {"stat": "Sum", "label": "Total Requests"}],
+                  [".", ".", {"stat": "Average", "label": "Avg Req/Sec"}]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Endpoint Invocations",
+                "yAxis": {
+                  "left": {
+                    "label": "Count",
+                    "showUnits": false
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Baseline Load",
+                      "value": 100
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 1,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SageMaker", "ModelLatency", {"stat": "p50"}],
+                  ["...", {"stat": "Average"}],
+                  ["...", {"stat": "p99"}],
+                  ["...", {"stat": "Maximum"}]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Model Latency Distribution (ms)",
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds",
+                    "showUnits": false
+                  }
+                },
+                "legend": {
+                  "position": "bottom"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "SLA Target: 100ms",
+                      "value": 100,
+                      "fill": "above"
+                    },
+                    {
+                      "label": "Warning: 200ms",
+                      "value": 200,
+                      "fill": "above"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 1,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SageMaker", "OverheadLatency", {"stat": "Average"}],
+                  ["...", {"stat": "p99"}],
+                  ["...", {"stat": "Maximum"}]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Container Overhead Latency (ms)",
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds",
+                    "showUnits": false
+                  }
+                },
+                "legend": {
+                  "position": "right"
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18,
+              "y": 1,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SageMaker", "Invocation4XXErrors", {"stat": "Sum", "label": "4XX Errors"}],
+                  [".", "Invocation5XXErrors", {"stat": "Sum", "label": "5XX Errors"}]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Error Rate by Type",
+                "yAxis": {
+                  "left": {
+                    "label": "Count",
+                    "showUnits": false
+                  }
+                },
+                "legend": {
+                  "position": "bottom"
+                },
+                "colors": ["#d62728", "#ff7f0e"]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 7,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SageMaker", "CPUUtilization", {"stat": "Average"}],
+                  [".", "MemoryUtilization", {"stat": "Average"}]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Instance Resource Utilization (%)",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100,
+                    "label": "Percentage",
+                    "showUnits": false
+                  }
+                },
+                "legend": {
+                  "position": "bottom"
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "High Utilization (80%)",
+                      "value": 80,
+                      "fill": "above",
+                      "color": "#d62728"
+                    },
+                    {
+                      "label": "Optimal (50%)",
+                      "value": 50,
+                      "color": "#2ca02c"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 7,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  ["AWS/SageMaker", "ModelLatency", {"stat": "p99"}],
+                  [{"expression": "m1 / 1000", "label": "P99 Latency (sec)", "id": "e1"}]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "P99 Latency Trend (5-min aggregation)",
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds",
+                    "showUnits": false
+                  }
+                },
+                "legend": {
+                  "position": "bottom"
+                }
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 13,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "fields @timestamp, @message, latency\n| filter ispresent(latency)\n| stats count() as requests, avg(latency) as avg_latency by bin(5m)\n| sort @timestamp desc",
+                "region": "${AWS::Region}",
+                "title": "Request Volume & Average Latency (CloudWatch Logs)",
+                "queryId": "endpoint-performance-trends"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 13,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "fields @timestamp, @message, error_type\n| filter error_type in ['4XX', '5XX']\n| stats count() as error_count by error_type\n| sort error_count desc",
+                "region": "${AWS::Region}",
+                "title": "Error Distribution (CloudWatch Logs)",
+                "queryId": "endpoint-error-analysis"
+              }
+            }
+          ]
+        }
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Alarms - High Latency
+  # ─────────────────────────────────────────────────────────────
+
+  HighLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${EndpointName}-high-latency"
+      AlarmDescription: "Alert when model latency P99 exceeds 1000ms"
+      MetricName: ModelLatency
+      Namespace: AWS/SageMaker
+      Statistic: p99
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2  # Trigger if condition persists for 10 minutes
+      Threshold: 1000  # 1 second = 1000 milliseconds
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      Dimensions:
+        - Name: EndpointName
+          Value: !Ref EndpointName
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: AlertType
+          Value: LatencyDegradation
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Alarms - High Error Rate
+  # ─────────────────────────────────────────────────────────────
+
+  HighErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${EndpointName}-high-error-rate"
+      AlarmDescription: "Alert when 5XX error rate exceeds 5% of invocations"
+      MetricName: Invocation5XXErrors
+      Namespace: AWS/SageMaker
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 1
+      Threshold: 50  # Triggers if >50 errors in 5 minutes
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      Dimensions:
+        - Name: EndpointName
+          Value: !Ref EndpointName
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: AlertType
+          Value: ErrorRateElevation
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Alarms - High CPU Utilization
+  # ─────────────────────────────────────────────────────────────
+
+  HighCPUUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${EndpointName}-high-cpu-utilization"
+      AlarmDescription: "Alert when CPU utilization exceeds 80% for 10 minutes"
+      MetricName: CPUUtilization
+      Namespace: AWS/SageMaker
+      Statistic: Average
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 2  # 10 minutes total
+      Threshold: 80  # 80%
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      Dimensions:
+        - Name: EndpointName
+          Value: !Ref EndpointName
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: AlertType
+          Value: ResourceExhaustion
+        - Key: ActionRequired
+          Value: "Consider upgrading instance type or scaling endpoint"
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Alarms - High Memory Utilization
+  # ─────────────────────────────────────────────────────────────
+
+  HighMemoryUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${EndpointName}-high-memory-utilization"
+      AlarmDescription: "Alert when memory utilization exceeds 85%"
+      MetricName: MemoryUtilization
+      Namespace: AWS/SageMaker
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85  # 85%
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      Dimensions:
+        - Name: EndpointName
+          Value: !Ref EndpointName
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: AlertType
+          Value: MemoryExhaustion
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Alarms - Zero Traffic
+  # ─────────────────────────────────────────────────────────────
+
+  ZeroTrafficAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${EndpointName}-zero-traffic"
+      AlarmDescription: "Alert when endpoint receives zero invocations for 15 minutes"
+      MetricName: Invocations
+      Namespace: AWS/SageMaker
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3  # 15 minutes
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref AlarmNotificationTopic
+      Dimensions:
+        - Name: EndpointName
+          Value: !Ref EndpointName
+      TreatMissingData: breaching  # Treat missing data as zero traffic
+      Tags:
+        - Key: AlertType
+          Value: EndpointHealthCheck
+
+Outputs:
+  DashboardURL:
+    Description: URL to CloudWatch Dashboard
+    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=SageMaker-${EndpointName}-Dashboard"
+    Export:
+      Name: !Sub "${AWS::StackName}-DashboardURL"
+
+  SNSTopicArn:
+    Description: SNS Topic ARN for alarm notifications
+    Value: !Ref AlarmNotificationTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-SNSTopicArn"
+
+  HighLatencyAlarmName:
+    Description: High Latency Alarm Name
+    Value: !Ref HighLatencyAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-HighLatencyAlarm"
+
+  HighErrorRateAlarmName:
+    Description: High Error Rate Alarm Name
+    Value: !Ref HighErrorRateAlarm
+    Export:
+      Name: !Sub "${AWS::StackName}-HighErrorRateAlarm"
+
+  DashboardCreationStatus:
+    Description: CloudWatch Dashboard and Alarms creation status
+    Value: "SUCCESS - All monitoring resources created"
+
+Tags:
+  - Key: Environment
+    Value: Production
+  - Key: Service
+    Value: SageMaker
+  - Key: Domain
+    Value: MLAExam
+  - Key: Purpose
+    Value: Endpoint Monitoring

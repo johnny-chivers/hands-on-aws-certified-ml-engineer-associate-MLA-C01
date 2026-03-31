@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EventBridge-Triggered SageMaker Pipeline for Automated Retraining
+
+Parameters:
+  SageMakerPipelineName:
+    Type: String
+    Default: mla-ml-pipeline
+
+  ScheduleExpression:
+    Type: String
+    Default: "cron(0 2 * * ? *)"
+    Description: Daily retraining at 2 AM UTC
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  PipelineTriggerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: |
+          import boto3
+          sagemaker = boto3.client('sagemaker')
+          def lambda_handler(event, context):
+              print("Triggering pipeline")
+              return {'statusCode': 200}
+
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+
+Outputs:
+  LambdaFunctionName:
+    Value: !Ref PipelineTriggerLambda

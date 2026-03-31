@@ -1,0 +1,383 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Blue-Green Deployment Strategy for SageMaker Endpoints
+  Maps to MLA-C01 Domain 3: Deployment and Governance
+
+  Blue-Green deployment enables:
+  - Zero-downtime model updates
+  - Instant rollback if new model fails
+  - A/B testing between model versions
+  - Canary deployments (gradual traffic shift)
+
+  Deployment Flow:
+  1. Blue endpoint: Current production model (receives 100% traffic)
+  2. Green endpoint: New model version (receives 0% traffic initially)
+  3. Test green endpoint for quality
+  4. Shift traffic to green (10% → 50% → 100%)
+  5. Monitor green performance
+  6. Rollback to blue if issues detected
+  7. Retire blue endpoint when confident
+
+Parameters:
+  BlueModelS3Uri:
+    Type: String
+    Description: S3 URI of the current production model (blue)
+    Default: s3://<YOUR-BUCKET-NAME>/models/blue/model.tar.gz
+
+  GreenModelS3Uri:
+    Type: String
+    Description: S3 URI of the new model version (green)
+    Default: s3://<YOUR-BUCKET-NAME>/models/green/model.tar.gz
+
+  InstanceType:
+    Type: String
+    Description: SageMaker instance type for endpoints
+    Default: ml.m5.xlarge
+    AllowedValues:
+      - ml.m5.large
+      - ml.m5.xlarge
+      - ml.m5.2xlarge
+      - ml.c5.large
+      - ml.c5.xlarge
+      - ml.c5.2xlarge
+
+  InstanceCount:
+    Type: Number
+    Description: Number of instances for each endpoint
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+
+  EnvironmentName:
+    Type: String
+    Description: Environment identifier (dev, staging, prod)
+    Default: staging
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # ─────────────────────────────────────────────────────────────
+  # Blue Endpoint Configuration (Current Production)
+  # ─────────────────────────────────────────────────────────────
+
+  BlueModel:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ModelName: !Sub "blue-model-${AWS::StackName}"
+      PrimaryContainer:
+        Image: !Sub "246618743249.dkr.ecr.${AWS::Region}.amazonaws.com/xgboost:latest"
+        ModelDataUrl: !Ref BlueModelS3Uri
+      ExecutionRoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/SageMaker-Execution-Role"
+      Tags:
+        - Key: DeploymentColor
+          Value: Blue
+        - Key: ModelVersion
+          Value: "1.0"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  BlueEndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub "blue-endpoint-config-${AWS::StackName}"
+      ProductionVariants:
+        - ModelName: !GetAtt BlueModel.ModelName
+          VariantName: BlueVariant
+          InitialInstanceCount: !Ref InstanceCount
+          InstanceType: !Ref InstanceType
+          InitialVariantWeight: 1.0
+      DataCaptureConfig:
+        Enabled: true
+        InitialSamplingPercentage: 100
+        DestinationS3Uri: !Sub "s3://<YOUR-BUCKET-NAME>/data-capture/blue/"
+        CaptureOptions:
+          - CSV
+          - JSON
+      Tags:
+        - Key: DeploymentStrategy
+          Value: BlueGreen
+        - Key: ModelColor
+          Value: Blue
+
+  # ─────────────────────────────────────────────────────────────
+  # Green Endpoint Configuration (New Model Version)
+  # ─────────────────────────────────────────────────────────────
+
+  GreenModel:
+    Type: AWS::SageMaker::Model
+    Properties:
+      ModelName: !Sub "green-model-${AWS::StackName}"
+      PrimaryContainer:
+        Image: !Sub "246618743249.dkr.ecr.${AWS::Region}.amazonaws.com/xgboost:latest"
+        ModelDataUrl: !Ref GreenModelS3Uri
+      ExecutionRoleArn: !Sub "arn:aws:iam::${AWS::AccountId}:role/SageMaker-Execution-Role"
+      Tags:
+        - Key: DeploymentColor
+          Value: Green
+        - Key: ModelVersion
+          Value: "2.0"
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  GreenEndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub "green-endpoint-config-${AWS::StackName}"
+      ProductionVariants:
+        - ModelName: !GetAtt GreenModel.ModelName
+          VariantName: GreenVariant
+          InitialInstanceCount: !Ref InstanceCount
+          InstanceType: !Ref InstanceType
+          InitialVariantWeight: 1.0
+      DataCaptureConfig:
+        Enabled: true
+        InitialSamplingPercentage: 100
+        DestinationS3Uri: !Sub "s3://<YOUR-BUCKET-NAME>/data-capture/green/"
+        CaptureOptions:
+          - CSV
+          - JSON
+      Tags:
+        - Key: DeploymentStrategy
+          Value: BlueGreen
+        - Key: ModelColor
+          Value: Green
+
+  # ─────────────────────────────────────────────────────────────
+  # Blue Endpoint (Current Production)
+  # ─────────────────────────────────────────────────────────────
+
+  BlueEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub "blue-endpoint-${AWS::StackName}"
+      EndpointConfigName: !GetAtt BlueEndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Color
+          Value: Blue
+        - Key: Status
+          Value: Active
+        - Key: TrafficPercentage
+          Value: "100"
+      # CloudWatch monitoring
+      MonitoringSchedules:
+        - MonitoringScheduleName: !Sub "blue-monitor-${AWS::StackName}"
+          MonitoringScheduleConfig:
+            ScheduleExpression: "cron(0 * * * ? *)"  # Every hour
+
+  # ─────────────────────────────────────────────────────────────
+  # Green Endpoint (New Model Version)
+  # ─────────────────────────────────────────────────────────────
+
+  GreenEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub "green-endpoint-${AWS::StackName}"
+      EndpointConfigName: !GetAtt GreenEndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Color
+          Value: Green
+        - Key: Status
+          Value: Canary
+        - Key: TrafficPercentage
+          Value: "0"
+      # CloudWatch monitoring
+      MonitoringSchedules:
+        - MonitoringScheduleName: !Sub "green-monitor-${AWS::StackName}"
+          MonitoringScheduleConfig:
+            ScheduleExpression: "cron(0 * * * ? *)"  # Every hour
+
+  # ─────────────────────────────────────────────────────────────
+  # Multi-Variant Endpoint (Alternative: Traffic Split)
+  # ─────────────────────────────────────────────────────────────
+
+  # Alternative to separate blue/green endpoints:
+  # Use a single endpoint with multiple variants and traffic splitting
+
+  MultiVariantEndpointConfig:
+    Type: AWS::SageMaker::EndpointConfig
+    Properties:
+      EndpointConfigName: !Sub "multi-variant-config-${AWS::StackName}"
+      ProductionVariants:
+        # Blue variant: 90% traffic
+        - ModelName: !GetAtt BlueModel.ModelName
+          VariantName: BlueVariant
+          InitialInstanceCount: !Ref InstanceCount
+          InstanceType: !Ref InstanceType
+          InitialVariantWeight: 0.9  # 90% of traffic
+        # Green variant: 10% traffic (canary)
+        - ModelName: !GetAtt GreenModel.ModelName
+          VariantName: GreenVariant
+          InitialInstanceCount: !Ref InstanceCount
+          InstanceType: !Ref InstanceType
+          InitialVariantWeight: 0.1  # 10% of traffic (canary)
+      DataCaptureConfig:
+        Enabled: true
+        InitialSamplingPercentage: 100
+        DestinationS3Uri: !Sub "s3://<YOUR-BUCKET-NAME>/data-capture/multi-variant/"
+        CaptureOptions:
+          - CSV
+          - JSON
+      Tags:
+        - Key: DeploymentStrategy
+          Value: MultiVariant
+        - Key: CanaryPercentage
+          Value: "10"
+
+  MultiVariantEndpoint:
+    Type: AWS::SageMaker::Endpoint
+    Properties:
+      EndpointName: !Sub "ml-endpoint-${AWS::StackName}"
+      EndpointConfigName: !GetAtt MultiVariantEndpointConfig.EndpointConfigName
+      Tags:
+        - Key: Strategy
+          Value: MultiVariantCanary
+        - Key: BlueTraffic
+          Value: "90%"
+        - Key: GreenTraffic
+          Value: "10%"
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Alarms for Blue/Green Comparison
+  # ─────────────────────────────────────────────────────────────
+
+  BlueLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "blue-endpoint-latency-${AWS::StackName}"
+      AlarmDescription: "Alert if blue endpoint latency exceeds 500ms"
+      MetricName: ModelLatency
+      Namespace: AWS/SageMaker
+      Statistic: p99
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 500
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: EndpointName
+          Value: !GetAtt BlueEndpoint.EndpointName
+        - Name: VariantName
+          Value: BlueVariant
+      TreatMissingData: notBreaching
+
+  GreenLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "green-endpoint-latency-${AWS::StackName}"
+      AlarmDescription: "Alert if green endpoint latency exceeds 500ms"
+      MetricName: ModelLatency
+      Namespace: AWS/SageMaker
+      Statistic: p99
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 500
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: EndpointName
+          Value: !GetAtt GreenEndpoint.EndpointName
+        - Name: VariantName
+          Value: GreenVariant
+      TreatMissingData: notBreaching
+
+  # ─────────────────────────────────────────────────────────────
+  # Deployment Strategy Documentation
+  # ─────────────────────────────────────────────────────────────
+
+Outputs:
+  BlueEndpointName:
+    Description: Name of the blue endpoint (current production)
+    Value: !GetAtt BlueEndpoint.EndpointName
+    Export:
+      Name: !Sub "${AWS::StackName}-BlueEndpointName"
+
+  GreenEndpointName:
+    Description: Name of the green endpoint (new version)
+    Value: !GetAtt GreenEndpoint.EndpointName
+    Export:
+      Name: !Sub "${AWS::StackName}-GreenEndpointName"
+
+  MultiVariantEndpointName:
+    Description: Multi-variant endpoint for canary deployments
+    Value: !GetAtt MultiVariantEndpoint.EndpointName
+    Export:
+      Name: !Sub "${AWS::StackName}-MultiVariantEndpointName"
+
+  DeploymentStrategy:
+    Description: Blue-Green deployment strategy guide
+    Value: |
+      BLUE-GREEN DEPLOYMENT PROCESS:
+
+      [PHASE 1] VALIDATION
+      ├─ Deploy green endpoint with new model
+      ├─ Test green endpoint with sample requests
+      └─ Verify latency, accuracy, error rates
+
+      [PHASE 2] CANARY (10% traffic)
+      ├─ Update multi-variant endpoint: blue 90%, green 10%
+      ├─ Monitor green metrics for 1-2 hours
+      ├─ Compare blue P99 latency vs green P99 latency
+      └─ If issues: Keep blue at 100%, retire green
+
+      [PHASE 3] RAMP-UP (50% traffic)
+      ├─ Increase green weight to 50%
+      ├─ Monitor for 1-2 hours
+      └─ Continue monitoring alarms and metrics
+
+      [PHASE 4] FULL SWITCH (100% traffic)
+      ├─ Set green to 100%, blue to 0%
+      ├─ Monitor for 24 hours
+      └─ If stable, retire blue endpoint
+
+      [ROLLBACK PLAN]
+      If green endpoint shows issues:
+      ├─ Immediately shift traffic back to blue (100%)
+      ├─ Terminate green endpoint
+      ├─ Investigate root cause
+      └─ Fix and retest before next deployment
+
+      MONITORING METRICS:
+      ✓ Latency (P50, P99, Max)
+      ✓ Throughput (invocations/second)
+      ✓ Error Rate (4XX, 5XX)
+      ✓ CPU/Memory Utilization
+      ✓ Model Quality (predictions accuracy)
+
+  RollbackProcedure:
+    Description: Rollback instructions if green deployment fails
+    Value: |
+      INSTANT ROLLBACK (< 1 minute):
+      1. In SageMaker console → Endpoints → endpoint-name
+      2. Click "Update endpoint"
+      3. Set blue variant weight to 1.0, green to 0.0
+      4. Click "Update endpoint"
+      5. Monitor blue metrics for recovery
+
+      PERMANENT ROLLBACK:
+      1. Update endpoint configuration back to blue-only
+      2. Remove green variant
+      3. Terminate green endpoint
+      4. Delete green model from registry
+      5. Investigate failures before next deployment attempt
+
+  CanaryMetrics:
+    Description: Key metrics to monitor during canary phase
+    Value: |
+      METRIC                  | BLUE BASELINE | THRESHOLD
+      ─────────────────────────┼───────────────┼──────────
+      Latency P99             | 100ms         | < 150ms
+      Latency P99 Increase    | —             | < 50% increase
+      Error Rate (5XX)        | 0.1%          | < 1.0%
+      CPU Utilization         | 30%           | < 80%
+      Memory Utilization      | 40%           | < 85%
+      Throughput degradation  | —             | < 10% drop
+
+Tags:
+  - Key: Environment
+    Value: !Ref EnvironmentName
+  - Key: Service
+    Value: SageMaker
+  - Key: Strategy
+    Value: BlueGreenDeployment
+  - Key: Domain
+    Value: MLAExam

@@ -1,0 +1,295 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS MLA-C01 Certification Course - Setup Infrastructure Template'
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Environment name prefix for all resources
+    Default: mla-c01
+    AllowedPattern: ^[a-z][a-z0-9\-]*$
+    ConstraintDescription: Must begin with a lowercase letter and contain only lowercase letters, numbers, and hyphens
+  VpcCIDR:
+    Type: String
+    Description: CIDR block for VPC
+    Default: 10.192.0.0/16
+    AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+  PublicSubnet1CIDR:
+    Type: String
+    Description: CIDR block for public subnet 1 in AZ1
+    Default: 10.192.10.0/24
+    AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+  PublicSubnet2CIDR:
+    Type: String
+    Description: CIDR block for public subnet 2 in AZ2
+    Default: 10.192.20.0/24
+    AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
+
+Resources:
+  # VPC Configuration
+  CourseVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-vpc'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Internet Gateway
+  CourseInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-igw'
+
+  CourseInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref CourseInternetGateway
+      VpcId: !Ref CourseVpc
+
+  # Public Subnet 1
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CourseVpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-subnet-1'
+
+  # Public Subnet 2
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CourseVpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-subnet-2'
+
+  # Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CourseVpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-rt'
+
+  # Routes
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: CourseInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CourseInternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  # S3 Bucket for ML Data and Models
+  CourseS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${EnvironmentName}-course-bucket-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-course-bucket'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # Security Group for SageMaker Notebook
+  SageMakerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for SageMaker notebook instance
+      VpcId: !Ref CourseVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS inbound
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-sagemaker-sg'
+
+  # IAM Role for SageMaker Execution
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-sagemaker-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${CourseS3Bucket}/*'
+                  - !Sub 'arn:aws:s3:::${CourseS3Bucket}'
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+        - PolicyName: GlueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetTable
+                  - glue:GetPartitions
+                  - glue:CreateTable
+                  - glue:UpdateTable
+                  - glue:BatchCreatePartition
+                  - glue:BatchUpdatePartition
+                Resource: '*'
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-sagemaker-role'
+
+  # SageMaker Notebook Instance
+  CourseNotebookInstance:
+    Type: AWS::SageMaker::NotebookInstance
+    Properties:
+      InstanceType: ml.t3.medium
+      NotebookInstanceName: !Sub '${EnvironmentName}-notebook'
+      RoleArn: !GetAtt SageMakerExecutionRole.Arn
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref SageMakerSecurityGroup
+      RootAccess: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-notebook-instance'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  S3BucketName:
+    Description: Name of the S3 bucket for ML data and models
+    Value: !Ref CourseS3Bucket
+    Export:
+      Name: !Sub '${EnvironmentName}-s3-bucket-name'
+
+  S3BucketArn:
+    Description: ARN of the S3 bucket
+    Value: !GetAtt CourseS3Bucket.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}-s3-bucket-arn'
+
+  SageMakerNotebookInstanceName:
+    Description: Name of the SageMaker notebook instance
+    Value: !Ref CourseNotebookInstance
+    Export:
+      Name: !Sub '${EnvironmentName}-notebook-instance-name'
+
+  SageMakerNotebookURL:
+    Description: URL to access the SageMaker notebook instance
+    Value: !Sub 'https://console.aws.amazon.com/sagemaker/home?region=${AWS::Region}#/notebook-instances/${CourseNotebookInstance}'
+    Export:
+      Name: !Sub '${EnvironmentName}-notebook-url'
+
+  SageMakerExecutionRoleArn:
+    Description: ARN of the SageMaker execution IAM role
+    Value: !GetAtt SageMakerExecutionRole.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}-sagemaker-role-arn'
+
+  VpcId:
+    Description: VPC ID for the course infrastructure
+    Value: !Ref CourseVpc
+    Export:
+      Name: !Sub '${EnvironmentName}-vpc-id'
+
+  VpcCIDRBlock:
+    Description: CIDR block of the VPC
+    Value: !GetAtt CourseVpc.CidrBlock
+    Export:
+      Name: !Sub '${EnvironmentName}-vpc-cidr'
+
+  PublicSubnet1Id:
+    Description: Public Subnet 1 ID in AZ1
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub '${EnvironmentName}-public-subnet-1-id'
+
+  PublicSubnet2Id:
+    Description: Public Subnet 2 ID in AZ2
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub '${EnvironmentName}-public-subnet-2-id'
+
+  SageMakerSecurityGroupId:
+    Description: Security group ID for SageMaker notebook
+    Value: !Ref SageMakerSecurityGroup
+    Export:
+      Name: !Sub '${EnvironmentName}-sagemaker-sg-id'

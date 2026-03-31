@@ -1,0 +1,473 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  VPC Endpoints for SageMaker Network Isolation and Private Access
+  Maps to MLA-C01 Domain 4: Infrastructure and Scalability
+
+  VPC Endpoints enable:
+  - Private access to AWS services without internet exposure
+  - Lower latency (AWS network instead of internet)
+  - Reduced data transfer costs
+  - Enhanced security (no NAT gateway needed)
+  - Compliance with network isolation requirements
+
+  Endpoint Types:
+  - Gateway: S3, DynamoDB (free, routed via route tables)
+  - Interface: SageMaker, ECR, CloudWatch, CloudFormation (fee per hour/GB)
+
+  MLA-C01 Focus: Network security is critical for production ML
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where endpoints will be created
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for interface endpoints (minimum 1, recommended 2+)
+
+  RouteTableId:
+    Type: AWS::EC2::RouteTable::Id
+    Description: Route table ID to associate with S3 gateway endpoint
+
+  EndpointSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for interface endpoints (should allow port 443 inbound)
+
+  EnvironmentName:
+    Type: String
+    Description: Environment identifier
+    Default: production
+    AllowedValues:
+      - development
+      - staging
+      - production
+
+Resources:
+  # ─────────────────────────────────────────────────────────────
+  # S3 Gateway VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: Free
+  # Use: Training data, model artifacts, logs
+  # Advantage: No egress charges for S3 access
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref RouteTableId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Policy 1: Read training data
+          - Sid: AllowS3DataBucketRead
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - "arn:aws:s3:::ml-data-bucket"
+              - "arn:aws:s3:::ml-data-bucket/*"
+          # Policy 2: Write model artifacts
+          - Sid: AllowS3ModelBucketWrite
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - "arn:aws:s3:::ml-models-bucket"
+              - "arn:aws:s3:::ml-models-bucket/*"
+          # Policy 3: Access logs bucket
+          - Sid: AllowS3LogsBucket
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+            Resource:
+              - "arn:aws:s3:::ml-logs-bucket"
+              - "arn:aws:s3:::ml-logs-bucket/*"
+      Tags:
+        - Key: Name
+          Value: s3-gateway-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # SageMaker API Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: SageMaker SDK calls (create jobs, list resources, etc.)
+  # Essential for: Training, processing, model management
+
+  SageMakerAPIInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sagemaker.api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # All SageMaker API permissions
+          - Sid: AllowSageMakerAPI
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - sagemaker:CreateTrainingJob
+              - sagemaker:DescribeTrainingJob
+              - sagemaker:CreateProcessingJob
+              - sagemaker:DescribeProcessingJob
+              - sagemaker:CreateModel
+              - sagemaker:DescribeModel
+              - sagemaker:CreateEndpoint
+              - sagemaker:UpdateEndpoint
+              - sagemaker:DescribeEndpoint
+              - sagemaker:CreateHyperParameterTuningJob
+              - sagemaker:DescribeHyperParameterTuningJob
+              - sagemaker:CreatePipeline
+              - sagemaker:DescribePipeline
+              - sagemaker:StartPipelineExecution
+              - sagemaker:ListTrainingJobs
+              - sagemaker:ListProcessingJobs
+              - sagemaker:ListEndpoints
+              - sagemaker:ListModels
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: sagemaker-api-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # SageMaker Runtime Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: Invoke endpoint predictions (InvokeEndpoint API)
+  # Critical for: Real-time inference, batch transform, a/b testing
+
+  SageMakerRuntimeInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.sagemaker.runtime"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # InvokeEndpoint permission
+          - Sid: AllowSageMakerRuntime
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - sagemaker:InvokeEndpoint
+            Resource:
+              - !Sub "arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*"
+      Tags:
+        - Key: Name
+          Value: sagemaker-runtime-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # ECR API Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: Get authorization tokens and pull container images
+  # Required: Custom training/inference containers
+
+  ECRAPIInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # ECR API permissions
+          - Sid: AllowECRAPI
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - ecr:GetAuthorizationToken
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+              - ecr:DescribeImages
+              - ecr:DescribeRepositories
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ecr-api-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # ECR DKR Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: Docker push/pull commands
+  # Note: Often paired with ECR API endpoint
+
+  ECRDKRInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # ECR DKR permissions
+          - Sid: AllowECRDocker
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Resource:
+              - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/*"
+      Tags:
+        - Key: Name
+          Value: ecr-dkr-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Logs Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: Write training/inference logs to CloudWatch
+  # Critical for: Job monitoring, debugging, audit trail
+
+  CloudWatchLogsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # CloudWatch Logs permissions
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+              - logs:DescribeLogGroups
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*"
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+      Tags:
+        - Key: Name
+          Value: cloudwatch-logs-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudWatch Monitoring Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: PutMetricData for custom CloudWatch metrics
+  # Optional: For applications that emit custom metrics
+
+  CloudWatchInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.monitoring"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # CloudWatch metrics permissions
+          - Sid: AllowCloudWatchMetrics
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - cloudwatch:PutMetricData
+              - cloudwatch:GetMetricStatistics
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: cloudwatch-monitoring-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ─────────────────────────────────────────────────────────────
+  # CloudFormation Interface VPC Endpoint
+  # ─────────────────────────────────────────────────────────────
+  # Cost: $0.01/hour + $0.01/GB data processed
+  # Use: Deploy infrastructure with CloudFormation
+  # Optional: For automated infrastructure provisioning
+
+  CloudFormationInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.cloudformation"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroupId
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # CloudFormation permissions
+          - Sid: AllowCloudFormation
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackResource
+              - cloudformation:GetTemplateSummary
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: cloudformation-endpoint
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  S3GatewayEndpointId:
+    Description: S3 Gateway VPC Endpoint ID
+    Value: !Ref S3GatewayEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-S3EndpointId"
+
+  SageMakerAPIEndpointId:
+    Description: SageMaker API Interface VPC Endpoint ID
+    Value: !Ref SageMakerAPIInterfaceEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerAPIEndpointId"
+
+  SageMakerRuntimeEndpointId:
+    Description: SageMaker Runtime Interface VPC Endpoint ID
+    Value: !Ref SageMakerRuntimeInterfaceEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-SageMakerRuntimeEndpointId"
+
+  ECRAPIEndpointId:
+    Description: ECR API Interface VPC Endpoint ID
+    Value: !Ref ECRAPIInterfaceEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-ECRAPIEndpointId"
+
+  ECRDKREndpointId:
+    Description: ECR DKR Interface VPC Endpoint ID
+    Value: !Ref ECRDKRInterfaceEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-ECRDKREndpointId"
+
+  CloudWatchLogsEndpointId:
+    Description: CloudWatch Logs Interface VPC Endpoint ID
+    Value: !Ref CloudWatchLogsInterfaceEndpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudWatchLogsEndpointId"
+
+  VPCEndpointConfiguration:
+    Description: VPC Endpoint setup summary and costs
+    Value: |
+      VPC ENDPOINTS CONFIGURED:
+
+      [GATEWAY ENDPOINTS] (Free)
+      └─ S3: Cost $0/month + data transfer
+         • Use: Training data, model artifacts
+         • Benefit: No NAT gateway needed for S3
+
+      [INTERFACE ENDPOINTS] (Paid)
+      ├─ SageMaker API: ~$7/month (1 endpoint) + data
+      │  • Use: CreateTrainingJob, DescribeModel, etc.
+      │  • Benefit: Private access to SageMaker control plane
+      │
+      ├─ SageMaker Runtime: ~$7/month + data
+      │  • Use: InvokeEndpoint for predictions
+      │  • Benefit: Private inference requests
+      │
+      ├─ ECR API: ~$7/month + data
+      │  • Use: Pull Docker images for training
+      │  • Benefit: Custom containers in VPC
+      │
+      ├─ ECR DKR: ~$7/month + data
+      │  • Use: Docker registry operations
+      │  • Benefit: Container image management
+      │
+      ├─ CloudWatch Logs: ~$7/month + data
+      │  • Use: Write training/inference logs
+      │  • Benefit: Job monitoring without internet
+      │
+      ├─ CloudWatch Metrics: ~$7/month + data
+      │  • Use: Custom metrics (optional)
+      │  • Benefit: Application monitoring
+      │
+      └─ CloudFormation: ~$7/month + data
+         • Use: Infrastructure automation
+         • Benefit: Stack creation in private network
+
+      ESTIMATED MONTHLY COST:
+      S3 Gateway Endpoint:        $0 + transfer
+      7 Interface Endpoints:      ~$50 + transfer (~$0.01/GB)
+      Data Transfer (est 100GB):  ~$1
+
+      TOTAL: ~$51/month (variable with usage)
+
+      WHY EACH ENDPOINT IS NEEDED:
+
+      ✓ S3: Essential (training data, model storage)
+      ✓ SageMaker API: Essential (create/describe jobs)
+      ✓ SageMaker Runtime: Essential (serve predictions)
+      ✓ ECR: Essential for custom containers
+      ✓ CloudWatch: Essential (logging and monitoring)
+      ✓ CloudFormation: Optional (if using IaC)
+
+      COST OPTIMIZATION:
+      1. Use Gateway endpoints where available (S3 free)
+      2. Consolidate to shared subnets (reuse endpoints)
+      3. Remove unused endpoints (daily review)
+      4. Monitor data transfer (large data = high cost)
+
+Tags:
+  - Key: Environment
+    Value: !Ref EnvironmentName
+  - Key: Service
+    Value: SageMaker
+  - Key: Type
+    Value: VPCEndpoints
+  - Key: Domain
+    Value: MLAExam
