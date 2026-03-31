@@ -14,29 +14,34 @@ This github contains the code for the [youtube video](https://www.youtube.com/wa
 
 ## Setup
 
-The `setup-code.yaml` contains code to be executed using Amazon CloudFormation. The code creates the base networking artefacts, S3 Bucket, SageMaker execution role, and SageMaker notebook instance required to complete the remaining sections of the course. The S3 Bucket will require a name which is globally unique to AWS to be entered before executing the stack.
+The `setup-code.yaml` contains code to be executed using Amazon CloudFormation. The code creates the base networking artefacts, S3 Bucket, SageMaker execution role, and SageMaker Studio Domain required to complete the remaining sections of the course.
 
 The following artefacts are created by the code:
 
-- VPC
-- Two public Subnets
-- Security Groups
-- Internet Gateway
-- Routing Table
-- S3 Bucket
-- SageMaker Execution Role
-- SageMaker Notebook Instance
+- VPC with two public subnets, Internet Gateway, and route table
+- Security Groups (NFS for EFS, inter-app communication)
+- S3 Bucket (versioned, encrypted)
+- SageMaker Execution Role (with Feature Store, S3, Glue, ECR, CloudWatch policies)
+- SageMaker Studio Domain (with `PublicInternetOnly` network access)
+- SageMaker User Profile
 
 After the stack has been created, note the following values from the **Outputs** tab in CloudFormation — you will need them throughout the course:
 
-- **BucketName** — the S3 bucket for data and model artifacts
-- **SageMakerRoleArn** — the IAM execution role ARN
-- **NotebookInstanceName** — the SageMaker notebook instance
+- **S3BucketName** — the S3 bucket for data and model artifacts
+- **SageMakerExecutionRoleArn** — the IAM execution role ARN
+- **SageMakerDomainId** — the Studio Domain ID
+- **SageMakerUserProfileName** — the user profile name
 
-Then open the notebook instance and clone this repo:
+Then open SageMaker Studio:
+
+1. In the AWS Console, go to **Amazon SageMaker AI** → **Applications and IDEs** → **SageMaker Studio**
+2. Select the domain and user profile created by the stack
+3. Click **Open Studio**
+4. Once in Studio, open a **JupyterLab** space (create one if prompted — use `ml.t3.medium`)
+
+Clone this repo from the JupyterLab terminal:
 
 ```bash
-cd ~/SageMaker
 git clone https://github.com/johnny-chivers/hands-on-aws-certified-ml-engineer-associate-MLA-C01.git
 cd hands-on-aws-certified-ml-engineer-associate-MLA-C01
 ```
@@ -46,10 +51,12 @@ Update the placeholder values in the demo scripts with your actual AWS resource 
 ```bash
 find . -name "*.py" -exec sed -i 's/<YOUR-BUCKET-NAME>/YOUR_ACTUAL_BUCKET/g' {} +
 find . -name "*.py" -exec sed -i 's/<YOUR-REGION>/YOUR_ACTUAL_REGION/g' {} +
-find . -name "*.py" -exec sed -i 's/<YOUR-SAGEMAKER-ROLE-ARN>/YOUR_ACTUAL_ROLE_ARN/g' {} +
+find . -name "*.py" -exec sed -i 's|<YOUR-SAGEMAKER-ROLE-ARN>|YOUR_ACTUAL_ROLE_ARN|g' {} +
 ```
 
 No manual S3 folder creation or data upload is needed — each demo script handles its own S3 uploads automatically.
+
+To view Feature Store, Model Registry, Endpoints, and other resources visually in the console, use the Studio left navigation: **Data** → **Feature Store**, **Models** → **Model Registry**, etc.
 
 ## Data
 
@@ -117,11 +124,10 @@ hands-on-aws-certified-ml-engineer-associate-MLA-C01/
 │   └── customer-churn/               # Churn classification dataset
 |
 ├── 1.setup-code/                     # CloudFormation setup
-│   └── setup-code.yaml               # VPC, S3, SageMaker notebook, IAM role
+│   └── setup-code.yaml               # VPC, S3, SageMaker Studio Domain, IAM role
 |
 ├── 2.data-ingestion-and-storage/     # Domain 1 - Task 1.1
-│   ├── data-ingestion-demo.py        # S3 upload/download, Feature Store
-│   └── feature-store.yaml            # Glue database, Feature Store CFN
+│   └── data-ingestion-demo.py        # S3 upload/download, Feature Store
 |
 ├── 3.data-transformation/            # Domain 1 - Task 1.2
 │   ├── data-transformation-demo.py   # Cleaning, feature engineering, encoding
@@ -206,10 +212,11 @@ AWS Identity and Access Management (IAM) is used to manage access to AWS service
 To avoid incurring unnecessary AWS charges after completing the course:
 
 1. Delete any running SageMaker endpoints
-2. Stop and delete the SageMaker notebook instance
-3. Delete the CloudFormation stacks in reverse order (monitoring/security first, then setup last)
-4. Empty and delete the S3 bucket
-5. Delete any ECR repositories created during the custom container demo
+2. Delete any Feature Store feature groups created during demos: `aws sagemaker delete-feature-group --feature-group-name <NAME>`
+3. Delete any JupyterLab spaces in the SageMaker Studio Domain
+4. Empty the S3 bucket: `aws s3 rm s3://<YOUR-BUCKET-NAME> --recursive`
+5. Delete the CloudFormation stacks in reverse order (monitoring/security first, then setup last)
+6. Delete any ECR repositories created during the custom container demo
 
 ## Author
 
