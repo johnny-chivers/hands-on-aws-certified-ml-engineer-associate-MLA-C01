@@ -25,7 +25,9 @@ Parameters:
     AllowedPattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$
 
 Resources:
+  # ============================================================
   # VPC Configuration
+  # ============================================================
   CourseVpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -85,7 +87,6 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-public-rt'
 
-  # Routes
   DefaultPublicRoute:
     Type: AWS::EC2::Route
     DependsOn: CourseInternetGatewayAttachment
@@ -106,7 +107,9 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
 
+  # ============================================================
   # S3 Bucket for ML Data and Models
+  # ============================================================
   CourseS3Bucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -128,16 +131,25 @@ Resources:
         - Key: Environment
           Value: !Ref EnvironmentName
 
-  # Security Group for SageMaker Notebook
+  # ============================================================
+  # Security Group for SageMaker Domain
+  # ============================================================
   SageMakerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group for SageMaker notebook instance
+      GroupDescription: Security group for SageMaker Studio domain
       VpcId: !Ref CourseVpc
       SecurityGroupIngress:
-        - IpProtocol: '-1'
-          CidrIp: 0.0.0.0/0
-          Description: All inbound traffic
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: !Ref VpcCIDR
+          Description: NFS for EFS (required by SageMaker Domain)
+        - IpProtocol: tcp
+          FromPort: 8192
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref SageMakerSecurityGroup
+          Description: SageMaker Studio inter-app communication
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
@@ -146,7 +158,20 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-sagemaker-sg'
 
+  # Self-referencing ingress rule for inter-app communication
+  SageMakerSecurityGroupSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SageMakerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8192
+      ToPort: 65535
+      SourceSecurityGroupId: !Ref SageMakerSecurityGroup
+      Description: SageMaker Studio inter-app communication
+
+  # ============================================================
   # IAM Role for SageMaker Execution
+  # ============================================================
   SageMakerExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -217,18 +242,44 @@ Resources:
         - Key: Name
           Value: !Sub '${EnvironmentName}-sagemaker-role'
 
-  # SageMaker Notebook Instance
-  CourseNotebookInstance:
-    Type: AWS::SageMaker::NotebookInstance
+  # ============================================================
+  # SageMaker Domain (replaces standalone Notebook Instance)
+  # Provides full Studio UI: Feature Store, Model Registry,
+  # Endpoints, Experiments, Pipelines - all visible in console
+  # ============================================================
+  SageMakerDomain:
+    Type: AWS::SageMaker::Domain
     Properties:
-      InstanceType: ml.t3.medium
-      NotebookInstanceName: !Sub '${EnvironmentName}-notebook'
-      RoleArn: !GetAtt SageMakerExecutionRole.Arn
-      DirectInternetAccess: Enabled
-      RootAccess: Enabled
+      DomainName: !Sub '${EnvironmentName}-studio-domain'
+      AuthMode: IAM
+      AppNetworkAccessType: PublicInternetOnly
+      VpcId: !Ref CourseVpc
+      SubnetIds:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups:
+          - !Ref SageMakerSecurityGroup
       Tags:
         - Key: Name
-          Value: !Sub '${EnvironmentName}-notebook-instance'
+          Value: !Sub '${EnvironmentName}-studio-domain'
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================
+  # SageMaker User Profile
+  # ============================================================
+  SageMakerUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !Ref SageMakerDomain
+      UserProfileName: !Sub '${EnvironmentName}-user'
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-user-profile'
         - Key: Environment
           Value: !Ref EnvironmentName
 
@@ -245,17 +296,23 @@ Outputs:
     Export:
       Name: !Sub '${EnvironmentName}-s3-bucket-arn'
 
-  SageMakerNotebookInstanceName:
-    Description: Name of the SageMaker notebook instance
-    Value: !Ref CourseNotebookInstance
+  SageMakerDomainId:
+    Description: SageMaker Studio Domain ID
+    Value: !Ref SageMakerDomain
     Export:
-      Name: !Sub '${EnvironmentName}-notebook-instance-name'
+      Name: !Sub '${EnvironmentName}-domain-id'
 
-  SageMakerNotebookURL:
-    Description: URL to access the SageMaker notebook instance
-    Value: !Sub 'https://console.aws.amazon.com/sagemaker/home?region=${AWS::Region}#/notebook-instances/${CourseNotebookInstance}'
+  SageMakerDomainURL:
+    Description: URL to access SageMaker Studio
+    Value: !GetAtt SageMakerDomain.Url
     Export:
-      Name: !Sub '${EnvironmentName}-notebook-url'
+      Name: !Sub '${EnvironmentName}-domain-url'
+
+  SageMakerUserProfileName:
+    Description: Name of the SageMaker user profile
+    Value: !Sub '${EnvironmentName}-user'
+    Export:
+      Name: !Sub '${EnvironmentName}-user-profile-name'
 
   SageMakerExecutionRoleArn:
     Description: ARN of the SageMaker execution IAM role
@@ -288,7 +345,7 @@ Outputs:
       Name: !Sub '${EnvironmentName}-public-subnet-2-id'
 
   SageMakerSecurityGroupId:
-    Description: Security group ID for SageMaker notebook
+    Description: Security group ID for SageMaker
     Value: !Ref SageMakerSecurityGroup
     Export:
       Name: !Sub '${EnvironmentName}-sagemaker-sg-id'
