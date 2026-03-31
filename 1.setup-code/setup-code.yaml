@@ -226,6 +226,7 @@ Resources:
       SubnetId: !Ref PublicSubnet1
       SecurityGroupIds:
         - !Ref SageMakerSecurityGroup
+      DirectInternetAccess: Enabled
       RootAccess: Enabled
       Tags:
         - Key: Name
