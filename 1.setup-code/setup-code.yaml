@@ -221,11 +221,7 @@ Resources:
       InstanceType: ml.t3.medium
       NotebookInstanceName: !Sub '${EnvironmentName}-notebook'
       RoleArn: !GetAtt SageMakerExecutionRole.Arn
-      SubnetId: !Ref PublicSubnet1
-      SecurityGroupIds:
-        - !Ref SageMakerSecurityGroup
       DirectInternetAccess: Enabled
-      DefaultCodeRepository: https://github.com/johnny-chivers/hands-on-aws-certified-ml-engineer-associate-MLA-C01.git
       RootAccess: Enabled
       Tags:
         - Key: Name
