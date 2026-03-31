@@ -141,9 +141,26 @@ Resources:
           CidrIp: 0.0.0.0/0
           Description: HTTPS inbound
       SecurityGroupEgress:
-        - IpProtocol: -1
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: All outbound traffic
+          Description: HTTPS outbound (git clone, pip install, AWS APIs)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP outbound (package mirrors)
+        - IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+          Description: DNS resolution (UDP)
+        - IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+          Description: DNS resolution (TCP fallback)
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-sagemaker-sg'
