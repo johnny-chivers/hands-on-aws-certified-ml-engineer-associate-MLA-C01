@@ -54,6 +54,13 @@ find . -name "*.py" -exec sed -i 's/<YOUR-REGION>/YOUR_ACTUAL_REGION/g' {} +
 find . -name "*.py" -exec sed -i 's|<YOUR-SAGEMAKER-ROLE-ARN>|YOUR_ACTUAL_ROLE_ARN|g' {} +
 ```
 
+**Important:** SageMaker Studio JupyterLab defaults to `/home/sagemaker-user` as the working directory. Before running any demo scripts in a notebook, set the working directory to the repo root:
+
+```python
+import os
+os.chdir('/home/sagemaker-user/hands-on-aws-certified-ml-engineer-associate-MLA-C01')
+```
+
 No manual S3 folder creation or data upload is needed — each demo script handles its own S3 uploads automatically.
 
 To view Feature Store, Model Registry, Endpoints, and other resources visually in the console, use the Studio left navigation: **Data** → **Feature Store**, **Models** → **Model Registry**, etc.
