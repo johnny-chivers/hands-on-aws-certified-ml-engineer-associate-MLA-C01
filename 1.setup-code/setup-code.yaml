@@ -145,11 +145,6 @@ Resources:
           ToPort: 2049
           CidrIp: !Ref VpcCIDR
           Description: NFS for EFS (required by SageMaker Domain)
-        - IpProtocol: tcp
-          FromPort: 8192
-          ToPort: 65535
-          SourceSecurityGroupId: !Ref SageMakerSecurityGroup
-          Description: SageMaker Studio inter-app communication
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
