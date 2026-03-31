@@ -256,6 +256,10 @@ Resources:
         ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
         SecurityGroups:
           - !Ref SageMakerSecurityGroup
+      DefaultSpaceSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        SecurityGroups:
+          - !Ref SageMakerSecurityGroup
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-studio-domain'
