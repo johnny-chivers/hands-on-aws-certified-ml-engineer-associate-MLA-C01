@@ -135,32 +135,13 @@ Resources:
       GroupDescription: Security group for SageMaker notebook instance
       VpcId: !Ref CourseVpc
       SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
+        - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
-          Description: HTTPS inbound
+          Description: All inbound traffic
       SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
+        - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
-          Description: HTTPS outbound (git clone, pip install, AWS APIs)
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP outbound (package mirrors)
-        - IpProtocol: udp
-          FromPort: 53
-          ToPort: 53
-          CidrIp: 0.0.0.0/0
-          Description: DNS resolution (UDP)
-        - IpProtocol: tcp
-          FromPort: 53
-          ToPort: 53
-          CidrIp: 0.0.0.0/0
-          Description: DNS resolution (TCP fallback)
+          Description: All outbound traffic
       Tags:
         - Key: Name
           Value: !Sub '${EnvironmentName}-sagemaker-sg'
@@ -244,6 +225,7 @@ Resources:
       SecurityGroupIds:
         - !Ref SageMakerSecurityGroup
       DirectInternetAccess: Enabled
+      DefaultCodeRepository: https://github.com/johnny-chivers/hands-on-aws-certified-ml-engineer-associate-MLA-C01.git
       RootAccess: Enabled
       Tags:
         - Key: Name
