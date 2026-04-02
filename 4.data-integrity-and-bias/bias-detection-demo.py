@@ -85,14 +85,15 @@ try:
     )
 
     # Generate churn with INTENTIONAL GENDER BIAS
-    # Male customers churn at ~35%, Female customers churn at ~20%
-    # This disparity is what Clarify should detect
+    # Male customers churn at ~45%, Female customers churn at ~15%
+    # This large disparity makes the bias obvious in the Clarify report
+    # In real-world data, bias can be much more subtle
     churn = []
     for i in range(n_samples):
         if gender[i] == "Male":
-            churn_prob = 0.35  # Higher churn rate for males
+            churn_prob = 0.45  # High churn rate for males
         else:
-            churn_prob = 0.20  # Lower churn rate for females
+            churn_prob = 0.15  # Low churn rate for females
 
         # Adjust by contract type (month-to-month churns more)
         if contract[i] == "Month-to-month":
@@ -163,6 +164,10 @@ try:
         # For binary classification: specify the reference group value
         # Clarify will compare other groups to this reference
         facet_values_or_threshold=["Female"],
+        # group_name: Column used to form subgroups for CDDL metric
+        # CDDL measures: "is there gender bias WITHIN each contract type?"
+        # Without this, the CDDL metric errors out
+        group_name="Contract",
     )
 
     logger.info("BiasConfig created with:")
