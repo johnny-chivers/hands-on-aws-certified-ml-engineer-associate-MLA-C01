@@ -2,9 +2,9 @@
 AWS MLA-C01: SageMaker Clarify Bias Detection Demo
 
 This script demonstrates pre-training bias detection using Amazon SageMaker Clarify:
-  1. Sets up SageMaker session and S3 paths
-  2. Creates DataConfig pointing to churn dataset
-  3. Defines BiasConfig with protected attributes (gender)
+  1. Generates synthetic telco churn data with intentional gender bias
+  2. Uploads data to S3 for Clarify processing
+  3. Creates DataConfig and BiasConfig for bias analysis
   4. Runs pre-training bias analysis using SageMakerClarifyProcessor
   5. Interprets key bias metrics: CI, DPL, KL Divergence
 
@@ -20,8 +20,10 @@ Key MLA-C01 Concepts:
 """
 
 import logging
+import numpy as np
 import pandas as pd
 import boto3
+import os
 from datetime import datetime
 from sagemaker import Session
 from sagemaker.clarify import (
@@ -60,17 +62,77 @@ try:
     logger.info(f"SageMaker Session initialized for region: {REGION}")
     logger.info(f"Default bucket: {BUCKET_NAME}")
 
-    # Step 2: Define S3 paths for data and outputs
-    # Clarify requires pre-processed CSV data in S3
-    s3_data_path = f"s3://{BUCKET_NAME}/data/churn-dataset"
-    s3_output_path = f"s3://{BUCKET_NAME}/clarify-bias-output/{TIMESTAMP}"
-    dataset_file = "churn_data.csv"
-    s3_dataset_path = f"{s3_data_path}/{dataset_file}"
+    # Step 2: Generate synthetic telco churn data
+    # We intentionally introduce gender bias so Clarify has something to detect
+    # In real-world ML: you'd use your actual dataset - this is for demonstration
+    logger.info("Generating synthetic telco churn dataset with intentional bias...")
 
-    logger.info(f"Data path: {s3_dataset_path}")
+    np.random.seed(42)
+    n_samples = 1000
+
+    # Generate customer attributes
+    gender = np.random.choice(["Male", "Female"], size=n_samples, p=[0.5, 0.5])
+    senior_citizen = np.random.choice([0, 1], size=n_samples, p=[0.84, 0.16])
+    tenure = np.random.randint(1, 72, size=n_samples)
+    monthly_charges = np.round(np.random.uniform(18.0, 118.0, size=n_samples), 2)
+    contract = np.random.choice(
+        ["Month-to-month", "One year", "Two year"],
+        size=n_samples, p=[0.55, 0.25, 0.20]
+    )
+    internet_service = np.random.choice(
+        ["DSL", "Fiber optic", "No"],
+        size=n_samples, p=[0.35, 0.45, 0.20]
+    )
+
+    # Generate churn with INTENTIONAL GENDER BIAS
+    # Male customers churn at ~35%, Female customers churn at ~20%
+    # This disparity is what Clarify should detect
+    churn = []
+    for i in range(n_samples):
+        if gender[i] == "Male":
+            churn_prob = 0.35  # Higher churn rate for males
+        else:
+            churn_prob = 0.20  # Lower churn rate for females
+
+        # Adjust by contract type (month-to-month churns more)
+        if contract[i] == "Month-to-month":
+            churn_prob += 0.10
+        elif contract[i] == "Two year":
+            churn_prob -= 0.10
+
+        churn.append("Yes" if np.random.random() < churn_prob else "No")
+
+    # Build DataFrame
+    df = pd.DataFrame({
+        "gender": gender,
+        "SeniorCitizen": senior_citizen,
+        "tenure": tenure,
+        "MonthlyCharges": monthly_charges,
+        "Contract": contract,
+        "InternetService": internet_service,
+        "Churn": churn,
+    })
+
+    logger.info(f"Generated {len(df)} samples")
+    logger.info(f"Churn distribution:\n{df['Churn'].value_counts()}")
+    logger.info(f"Churn by gender:\n{df.groupby('gender')['Churn'].value_counts()}")
+
+    # Step 3: Upload data to S3
+    # Clarify requires data in S3 - save as CSV with headers
+    s3_prefix = "data/churn-dataset"
+    dataset_file = "churn_data.csv"
+    local_path = f"/tmp/{dataset_file}"
+
+    df.to_csv(local_path, index=False)
+
+    s3_client.upload_file(local_path, BUCKET_NAME, f"{s3_prefix}/{dataset_file}")
+    s3_dataset_path = f"s3://{BUCKET_NAME}/{s3_prefix}/{dataset_file}"
+    s3_output_path = f"s3://{BUCKET_NAME}/clarify-bias-output/{TIMESTAMP}"
+
+    logger.info(f"Data uploaded to: {s3_dataset_path}")
     logger.info(f"Output path: {s3_output_path}")
 
-    # Step 3: Create DataConfig
+    # Step 4: Create DataConfig
     # DataConfig specifies where the data is, its format, and headers
     # Clarify expects CSV format with header row
     data_config = DataConfig(
@@ -78,15 +140,16 @@ try:
         s3_output_path=s3_output_path,
         # Specify which column is the label/target variable
         label="Churn",  # Binary: "Yes" or "No"
-        # For multi-class, set label_values_or_threshold to list of positive classes
-        headers=["CustomerID", "Age", "Gender", "Tenure", "MonthlyCharges", "Churn"],
+        # Headers must match the CSV columns exactly
+        headers=["gender", "SeniorCitizen", "tenure", "MonthlyCharges",
+                 "Contract", "InternetService", "Churn"],
         # Data format: CSV, JSON, Parquet
         dataset_type="text/csv",
     )
 
     logger.info("DataConfig created successfully")
 
-    # Step 4: Create BiasConfig
+    # Step 5: Create BiasConfig
     # BiasConfig defines which attributes we measure bias for and how
     # Facet: protected attribute (e.g., gender, race, age)
     # Label: target variable we're testing fairness against
@@ -95,7 +158,7 @@ try:
         # Clarify measures bias in prediction of positive class
         label_values_or_threshold=["Yes"],
         # facet_name: The column name of the protected attribute
-        facet_name="Gender",
+        facet_name="gender",
         # facet_values_or_threshold: Values that define the reference group
         # For binary classification: specify the reference group value
         # Clarify will compare other groups to this reference
@@ -103,12 +166,12 @@ try:
     )
 
     logger.info("BiasConfig created with:")
-    logger.info(f"  - Protected attribute (facet): Gender")
+    logger.info(f"  - Protected attribute (facet): gender")
     logger.info(f"  - Reference group: Female")
     logger.info(f"  - Target label: Churn")
     logger.info(f"  - Positive class: Yes")
 
-    # Step 5: Initialize SageMakerClarifyProcessor
+    # Step 6: Initialize SageMakerClarifyProcessor
     # Processor: Orchestrates Clarify analysis jobs
     # Runs on SageMaker processing instances (on-demand compute)
     clarify_processor = SageMakerClarifyProcessor(
@@ -120,7 +183,7 @@ try:
 
     logger.info("SageMakerClarifyProcessor initialized")
 
-    # Step 6: Run pre-training bias analysis
+    # Step 7: Run pre-training bias analysis
     # Pre-training bias: Detects bias in data before model training
     # Analyzes: label distribution differences between groups
     logger.info("Running pre-training bias analysis...")
@@ -135,7 +198,7 @@ try:
 
     logger.info("Pre-training bias analysis completed")
 
-    # Step 7: Parse and interpret results
+    # Step 8: Parse and interpret results
     # Clarify generates JSON report with bias metrics
     logger.info("=" * 70)
     logger.info("BIAS ANALYSIS RESULTS")
@@ -199,7 +262,7 @@ try:
     logger.info("   - Implement model card documentation for transparency")
     logger.info("=" * 70)
 
-    # Step 8: Access detailed report
+    # Step 9: Access detailed report
     # The analysis creates a detailed JSON report in S3
     logger.info(f"\nDetailed bias report available at: {s3_output_path}")
     logger.info("Key files:")
