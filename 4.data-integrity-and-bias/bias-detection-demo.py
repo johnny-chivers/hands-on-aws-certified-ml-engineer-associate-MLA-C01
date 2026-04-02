@@ -127,14 +127,10 @@ try:
 
     clarify_processor.run_pre_training_bias(
         data_config=data_config,
-        bias_config=bias_config,
-        # Use sample for faster analysis on large datasets
-        # For production: comment out for full dataset analysis
-        data_analysis_start_log_line=0,
-        data_analysis_end_log_line=10000,
-        job_description="Pre-training bias analysis for churn prediction",
-        # Optional: Specify CloudWatch logs configuration
-        logs=True,
+        data_bias_config=bias_config,
+        # methods="all" computes all pre-training bias metrics:
+        # CI, DPL, KL, JS, LP, TVD, KS, CDDL, CDDPL
+        methods="all",
     )
 
     logger.info("Pre-training bias analysis completed")
