@@ -25,7 +25,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import time
-from sagemaker import Session, get_execution_role
+from sagemaker import Session
 from sagemaker.estimator import Estimator
 from sagemaker.inputs import TrainingInput
 from sagemaker.tuner import (
@@ -44,14 +44,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BUCKET_NAME = "<YOUR-BUCKET-NAME>"
+REGION = "<YOUR-REGION>"  # e.g., us-east-1
+ROLE_ARN = "<YOUR-ROLE-ARN>"  # SageMaker execution role ARN
+
 logger.info("Initializing SageMaker Hyperparameter Tuning Script...")
 
 try:
     # Step 1: Initialize AWS and SageMaker Configuration
-    sagemaker_session = Session()
-    role = get_execution_role()
-    region = boto3.Session().region_name
-    bucket = sagemaker_session.default_bucket()
+    sagemaker_session = Session(
+        boto_session=boto3.Session(region_name=REGION),
+        default_bucket=BUCKET_NAME,
+    )
+    role = ROLE_ARN
+    region = REGION
+    bucket = BUCKET_NAME
 
     logger.info(f"AWS Region: {region}")
     logger.info(f"SageMaker Role: {role}")

@@ -24,7 +24,7 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime
-from sagemaker import Session, get_execution_role
+from sagemaker import Session
 from sagemaker.pytorch import PyTorch
 from sagemaker.inputs import TrainingInput
 from sagemaker.utils import name_from_base
@@ -46,10 +46,17 @@ try:
     logger.info("STEP 1: INITIALIZE SAGEMAKER")
     logger.info("=" * 70)
 
-    sagemaker_session = Session()
-    role = get_execution_role()
-    region = boto3.Session().region_name
-    bucket = sagemaker_session.default_bucket()
+    BUCKET_NAME = "<YOUR-BUCKET-NAME>"
+    REGION = "<YOUR-REGION>"  # e.g., us-east-1
+    ROLE_ARN = "<YOUR-ROLE-ARN>"  # SageMaker execution role ARN
+
+    sagemaker_session = Session(
+        boto_session=boto3.Session(region_name=REGION),
+        default_bucket=BUCKET_NAME,
+    )
+    role = ROLE_ARN
+    region = REGION
+    bucket = BUCKET_NAME
 
     logger.info(f"AWS Region: {region}")
     logger.info(f"SageMaker Role: {role}")

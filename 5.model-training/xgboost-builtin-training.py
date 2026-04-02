@@ -29,7 +29,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import time
-from sagemaker import Session, get_execution_role
+from sagemaker import Session
 from sagemaker.estimator import Estimator
 from sagemaker.inputs import TrainingInput
 from sagemaker.utils import name_from_base
@@ -42,15 +42,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BUCKET_NAME = "<YOUR-BUCKET-NAME>"
+REGION = "<YOUR-REGION>"  # e.g., us-east-1
+ROLE_ARN = "<YOUR-ROLE-ARN>"  # SageMaker execution role ARN
+
 logger.info("Initializing XGBoost Training Script...")
 
 try:
     # Step 1: Initialize AWS and SageMaker Configuration
-    # Get current SageMaker session (uses credentials from environment)
-    sagemaker_session = Session()
-    role = get_execution_role()  # IAM role for SageMaker execution
-    region = boto3.Session().region_name
-    bucket = sagemaker_session.default_bucket()  # Default bucket for this session
+    # Use the course bucket from CloudFormation, not the SageMaker default bucket
+    sagemaker_session = Session(
+        boto_session=boto3.Session(region_name=REGION),
+        default_bucket=BUCKET_NAME,
+    )
+    role = ROLE_ARN
+    region = REGION
+    bucket = BUCKET_NAME
 
     logger.info(f"AWS Region: {region}")
     logger.info(f"SageMaker Role: {role}")

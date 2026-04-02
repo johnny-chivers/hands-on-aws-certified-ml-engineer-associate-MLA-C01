@@ -21,7 +21,7 @@ import logging
 import boto3
 import json
 from datetime import datetime
-from sagemaker import Session, get_execution_role
+from sagemaker import Session
 from sagemaker.model_monitor import ModelExplainabilityMonitor
 from sagemaker.model_metrics import MetricsSource, ModelMetrics
 from sagemaker.model_package import (
@@ -37,14 +37,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+BUCKET_NAME = "<YOUR-BUCKET-NAME>"
+REGION = "<YOUR-REGION>"  # e.g., us-east-1
+ROLE_ARN = "<YOUR-ROLE-ARN>"  # SageMaker execution role ARN
+
 logger.info("Initializing SageMaker Model Registry Demo...")
 
 try:
     # Step 1: Initialize AWS and SageMaker
-    sagemaker_session = Session()
-    role = get_execution_role()
-    region = boto3.Session().region_name
-    bucket = sagemaker_session.default_bucket()
+    sagemaker_session = Session(
+        boto_session=boto3.Session(region_name=REGION),
+        default_bucket=BUCKET_NAME,
+    )
+    role = ROLE_ARN
+    region = REGION
+    bucket = BUCKET_NAME
     account_id = boto3.client("sts").get_caller_identity()["Account"]
 
     logger.info(f"AWS Region: {region}")
