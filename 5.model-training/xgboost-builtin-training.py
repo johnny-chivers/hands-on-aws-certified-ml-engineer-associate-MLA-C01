@@ -265,10 +265,11 @@ try:
     )
 
     # Data channels: maps S3 data to training container paths
-    # training: /opt/ml/input/data/training/
+    # XGBoost built-in algorithm expects channel named "train" (not "training")
+    # train: /opt/ml/input/data/train/
     # validation: /opt/ml/input/data/validation/
     data_channels = {
-        "training": train_input,
+        "train": train_input,
         "validation": validation_input,
     }
 
