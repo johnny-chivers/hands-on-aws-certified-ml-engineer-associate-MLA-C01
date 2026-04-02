@@ -97,8 +97,8 @@ try:
         # For binary classification: specify the reference group value
         # Clarify will compare other groups to this reference
         facet_values_or_threshold=["Female"],
-        # label: Target column name
-        label="Churn",
+        # label_name: Target column name
+        label_name="Churn",
         # label_values_or_threshold: Positive class values for the label
         # Clarify measures bias in prediction of positive class
         label_values_or_threshold=["Yes"],
