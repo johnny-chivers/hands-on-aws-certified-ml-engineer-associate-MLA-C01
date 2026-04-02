@@ -207,8 +207,9 @@ try:
         # Higher values: use all features
 
         # ===== Tree-Specific Parameters =====
-        "min_child_weight": CategoricalParameter(
-            values=["1", "3", "5", "10"],
+        "min_child_weight": IntegerParameter(
+            min_value=1,
+            max_value=10,
             scaling_type="Linear",
         ),
         # Minimum weight sum in child nodes
@@ -313,7 +314,7 @@ try:
     )
 
     data_channels = {
-        "training": train_input,
+        "train": train_input,
         "validation": validation_input,
     }
 
