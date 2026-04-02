@@ -343,13 +343,6 @@ try:
     logger.info("  - PII detection and masking")
     logger.info("  - Standardization and formatting rules")
 
-    # Save report to JSON
-    report_path = "/tmp/data_quality_report.json"
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
-
-    logger.info(f"\nDetailed report saved to: {report_path}")
-
     # Recommendations based on quality score
     logger.info("\nRECOMMENDATIONS:")
     if quality_score >= 90:
