@@ -22,13 +22,6 @@ import boto3
 import json
 from datetime import datetime
 from sagemaker import Session
-from sagemaker.model_monitor import ModelExplainabilityMonitor
-from sagemaker.model_metrics import MetricsSource, ModelMetrics
-from sagemaker.model_package import (
-    ModelPackageGroup,
-    ModelPackage,
-    ModelPackageStatusDetails,
-)
 
 # Configure logging
 logging.basicConfig(
@@ -105,8 +98,34 @@ try:
 
     logger.info(f"\nCreating Model Package: {model_package_name}")
 
-    # In production: model_uri comes from training job output
-    model_uri = f"s3://{bucket}/models/xgboost-housing/model.tar.gz"
+    # Look up the latest completed xgboost training job to get its model artifact
+    # In production: this would come from your training pipeline
+    logger.info("Looking up latest completed training job for model artifact...")
+
+    # First try to find xgboost-housing jobs, then fall back to any xgboost job
+    model_uri = None
+    for search_name in ["xgboost-housing", "xgb-tune", "xgboost"]:
+        training_jobs = sagemaker_client.list_training_jobs(
+            NameContains=search_name,
+            StatusEquals="Completed",
+            SortBy="CreationTime",
+            SortOrder="Descending",
+            MaxResults=5,
+        )
+        logger.info(f"Search '{search_name}': found {len(training_jobs['TrainingJobSummaries'])} completed jobs")
+        for job in training_jobs["TrainingJobSummaries"]:
+            logger.info(f"  - {job['TrainingJobName']} ({job['TrainingJobStatus']})")
+
+        if training_jobs["TrainingJobSummaries"]:
+            latest_job_name = training_jobs["TrainingJobSummaries"][0]["TrainingJobName"]
+            job_desc = sagemaker_client.describe_training_job(TrainingJobName=latest_job_name)
+            model_uri = job_desc["ModelArtifacts"]["S3ModelArtifacts"]
+            logger.info(f"Using model from training job: {latest_job_name}")
+            break
+
+    if model_uri is None:
+        model_uri = f"s3://{bucket}/models/xgboost-housing/model.tar.gz"
+        logger.warning("No completed training jobs found, using placeholder URI")
 
     logger.info(f"Model artifacts location: {model_uri}")
 
@@ -151,35 +170,32 @@ try:
             logger.info(f"    {metric_name}: {value}")
 
     # Inference specification: describes inputs/outputs for inference
+    # Use the SageMaker-owned XGBoost container image (not your account's ECR)
+    import sagemaker.image_uris
+    xgboost_image = sagemaker.image_uris.retrieve("xgboost", region, version="1.5-1")
+    logger.info(f"XGBoost container image: {xgboost_image}")
+
     inference_specification = {
         "Containers": [
             {
-                "Image": f"{account_id}.dkr.ecr.{region}.amazonaws.com/sagemaker-xgboost:1.5-1",
-                "ImageDigest": "sha256:abc123def456",  # Container image digest
+                "Image": xgboost_image,
                 "ModelDataUrl": model_uri,
-                "Environment": {
-                    "SAGEMAKER_PROGRAM": "inference.py",
-                    "SAGEMAKER_SUBMIT_DIRECTORY": "/opt/ml/code",
-                },
             }
         ],
         "SupportedTransformInstanceTypes": ["ml.m5.xlarge", "ml.m5.2xlarge"],
         "SupportedRealtimeInferenceInstanceTypes": ["ml.m5.xlarge", "ml.m5.2xlarge"],
+        "SupportedContentTypes": ["text/csv"],
+        "SupportedResponseMIMETypes": ["text/csv"],
     }
 
     try:
         model_package_response = sagemaker_client.create_model_package(
             ModelPackageGroupName=model_package_group_name,
-            ModelPackageName=model_package_name,
-            ModelPackageVersion=int(model_version.split(".")[0]),
+            # Version is auto-assigned by SageMaker (1, 2, 3, etc.)
             ModelPackageDescription="XGBoost housing price prediction model",
             InferenceSpecification=inference_specification,
             ModelApprovalStatus=model_approval_status,  # Initial status: Pending approval
-            Tags=[
-                {"Key": "Version", "Value": model_version},
-                {"Key": "Algorithm", "Value": "XGBoost"},
-                {"Key": "Domain", "Value": "RealEstate"},
-            ],
+            # Note: Tags go on the Model Package GROUP, not individual versions
         )
 
         model_package_arn = model_package_response["ModelPackageArn"]
@@ -188,7 +204,7 @@ try:
         logger.info(f"  Approval Status: {model_approval_status}")
 
     except Exception as e:
-        logger.warning(f"Could not create model package: {str(e)[:100]}")
+        logger.warning(f"Could not create model package: {str(e)}")
         model_package_arn = f"arn:aws:sagemaker:{region}:{account_id}:model-package/{model_package_group_name}/{model_package_name}"
 
     # Step 4: List Model Packages in Group
@@ -217,7 +233,7 @@ try:
             logger.info(f"  Created: {package['CreationTime']}")
 
     except Exception as e:
-        logger.info(f"Could not list model packages: {str(e)[:100]}")
+        logger.info(f"Could not list model packages: {str(e)}")
 
     # Step 5: Describe Model Package (Get Details & Lineage)
     logger.info("\n" + "=" * 70)
@@ -267,7 +283,7 @@ try:
         logger.info(f"✓ Model approval status updated to: {new_approval_status}")
 
     except Exception as e:
-        logger.warning(f"Could not update approval status: {str(e)[:100]}")
+        logger.warning(f"Could not update approval status: {str(e)}")
         logger.info("(This is expected if model package doesn't exist)")
 
     # Step 7: Model Registry Best Practices
