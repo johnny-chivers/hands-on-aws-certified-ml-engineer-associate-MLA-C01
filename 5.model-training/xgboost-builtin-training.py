@@ -256,16 +256,12 @@ try:
         s3_data=train_path,
         content_type="text/csv",
         s3_data_type="S3Prefix",  # S3 prefix (directory) mode
-        record_wrapper_type="None",  # No record wrapper for CSV
-        compression="None",
     )
 
     validation_input = TrainingInput(
         s3_data=validation_path,
         content_type="text/csv",
         s3_data_type="S3Prefix",
-        record_wrapper_type="None",
-        compression="None",
     )
 
     # Data channels: maps S3 data to training container paths
