@@ -23,6 +23,7 @@ import json
 import boto3
 from datetime import datetime
 from sagemaker import Session, image_uris
+from sagemaker.workflow.pipeline_context import PipelineSession
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.xgboost.estimator import XGBoost
 from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
@@ -47,9 +48,11 @@ ROLE_ARN = '<YOUR-ROLE-ARN>'
 BUCKET_NAME = '<YOUR-BUCKET-NAME>'
 PIPELINE_NAME = "ml-training-pipeline"
 
-# Initialize SageMaker session
-session = Session(
-    boto_session=boto3.Session(region_name=AWS_REGION),
+# Initialize PipelineSession — defers execution so .run() returns step_args
+# instead of launching real jobs (required for building pipeline definitions)
+boto_sess = boto3.Session(region_name=AWS_REGION)
+session = PipelineSession(
+    boto_session=boto_sess,
     default_bucket=BUCKET_NAME,
 )
 role = ROLE_ARN
@@ -173,10 +176,8 @@ def create_data_processing_step(parameters):
     # Define processing step with proper S3 inputs and outputs
     input_data_uri = "s3://{}/pipeline/raw-data".format(BUCKET_NAME)
 
-    processing_step = ProcessingStep(
-        name="PreprocessingStep",
+    step_args = processor.run(
         code="s3://{}/pipeline/scripts/preprocessing.py".format(BUCKET_NAME),
-        processor=processor,
         inputs=[
             ProcessingInput(
                 source=input_data_uri,
@@ -201,13 +202,17 @@ def create_data_processing_step(parameters):
                 destination="s3://{}/pipeline/processed/test".format(BUCKET_NAME),
             ),
         ],
-        job_arguments=[
+        arguments=[
             "--train-size",
             "0.7",  # 70% training
             "--test-size",
             "0.15",  # 15% test
-            # 15% validation (1 - 0.7 - 0.15)
         ],
+    )
+
+    processing_step = ProcessingStep(
+        name="PreprocessingStep",
+        step_args=step_args,
     )
 
     print("✓ Data preprocessing step created")
@@ -321,17 +326,32 @@ def create_model_evaluation_step(parameters, training_step, processing_step):
     )
 
     # Evaluation step (uses ProcessingStep — there is no separate EvaluationStep class)
-    evaluation_step = ProcessingStep(
-        name="EvaluationStep",
-        processor=evaluator,
-        code="s3://{}/evaluation/evaluation.py".format(BUCKET_NAME),
+    eval_step_args = evaluator.run(
+        code="s3://{}/pipeline/scripts/evaluation.py".format(BUCKET_NAME),
         inputs=[
-            # Model artifacts from TrainingStep
-            # Validation data from ProcessingStep
+            ProcessingInput(
+                source=training_step.properties.ModelArtifacts.S3ModelArtifacts,
+                destination="/opt/ml/processing/model",
+                input_name="model",
+            ),
+            ProcessingInput(
+                source=processing_step.properties.ProcessingOutputConfig.Outputs["test"].S3Output.S3Uri,
+                destination="/opt/ml/processing/test",
+                input_name="test-data",
+            ),
         ],
         outputs=[
-            # Evaluation metrics output
+            ProcessingOutput(
+                output_name="evaluation",
+                source="/opt/ml/processing/evaluation",
+                destination="s3://{}/pipeline/evaluation".format(BUCKET_NAME),
+            ),
         ],
+    )
+
+    evaluation_step = ProcessingStep(
+        name="EvaluationStep",
+        step_args=eval_step_args,
         property_files=[evaluation_report],
     )
 
@@ -534,7 +554,8 @@ def upsert_and_execute_pipeline(pipeline):
         pipeline_exec_response = pipeline.start()
         print("✓ Pipeline execution started")
         print(f"  Execution ARN: {pipeline_exec_response.arn}")
-        print(f"  Status: {pipeline_exec_response.status}")
+        exec_desc = pipeline_exec_response.describe()
+        print(f"  Status: {exec_desc['PipelineExecutionStatus']}")
 
         return pipeline_exec_response
 
