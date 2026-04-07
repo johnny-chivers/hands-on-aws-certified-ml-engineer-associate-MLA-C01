@@ -298,7 +298,7 @@ Resources:
       AlarmDescription: "Alert when model latency P99 exceeds 1000ms"
       MetricName: ModelLatency
       Namespace: AWS/SageMaker
-      Statistic: p99
+      ExtendedStatistic: p99
       Period: 300  # 5 minutes
       EvaluationPeriods: 2  # Trigger if condition persists for 10 minutes
       Threshold: 1000  # 1 second = 1000 milliseconds
