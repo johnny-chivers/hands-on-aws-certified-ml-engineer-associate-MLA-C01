@@ -401,7 +401,7 @@ def create_model_registration_step(parameters, training_step, xgboost_estimator)
         model_package_group_name="sagemaker-model-registry-group",
         approval_status=parameters['model_approval_status'],
         model_metrics=ModelMetrics(
-            model_quality=MetricsSource(
+            model_statistics=MetricsSource(
                 s3_uri="s3://{}/evaluation/metrics.json".format(BUCKET_NAME),
                 content_type="application/json",
             ),
