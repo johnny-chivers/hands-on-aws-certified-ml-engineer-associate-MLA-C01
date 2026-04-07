@@ -15,6 +15,8 @@ Key Concepts:
 import boto3
 import json
 from datetime import datetime, timedelta
+from sagemaker import Session
+from sagemaker.predictor import Predictor
 from sagemaker.model_monitor import (
     DataCaptureConfig,
     DefaultModelMonitor,
@@ -22,19 +24,23 @@ from sagemaker.model_monitor import (
 )
 from sagemaker.model_monitor.dataset_format import DatasetFormat
 
-# Configuration placeholders for production
+# Configuration placeholders — fill these in before running
 AWS_REGION = '<YOUR-REGION>'
 ROLE_ARN = '<YOUR-ROLE-ARN>'
+BUCKET_NAME = '<YOUR-BUCKET-NAME>'
 ENDPOINT_NAME = '<YOUR-ENDPOINT-NAME>'
-BASELINE_DATA_S3_URI = 's3://<YOUR-BUCKET-NAME>/monitoring/baseline-data/'
-BASELINE_STATISTICS_S3_URI = 's3://<YOUR-BUCKET-NAME>/monitoring/baseline-statistics/'
-BASELINE_CONSTRAINTS_S3_URI = 's3://<YOUR-BUCKET-NAME>/monitoring/baseline-constraints/'
-DATA_CAPTURE_S3_URI = 's3://<YOUR-BUCKET-NAME>/monitoring/data-capture/'
-MONITORING_OUTPUT_S3_URI = 's3://<YOUR-BUCKET-NAME>/monitoring/results/'
 
-# Initialize AWS clients
-sagemaker_client = boto3.client('sagemaker', region_name=AWS_REGION)
-s3_client = boto3.client('s3', region_name=AWS_REGION)
+BASELINE_DATA_S3_URI = f's3://{BUCKET_NAME}/monitoring/baseline-data/'
+BASELINE_STATISTICS_S3_URI = f's3://{BUCKET_NAME}/monitoring/baseline-statistics/'
+BASELINE_CONSTRAINTS_S3_URI = f's3://{BUCKET_NAME}/monitoring/baseline-constraints/'
+DATA_CAPTURE_S3_URI = f's3://{BUCKET_NAME}/monitoring/data-capture/'
+MONITORING_OUTPUT_S3_URI = f's3://{BUCKET_NAME}/monitoring/results/'
+
+# Initialize AWS clients and SageMaker session
+boto_sess = boto3.Session(region_name=AWS_REGION)
+sagemaker_client = boto_sess.client('sagemaker')
+s3_client = boto_sess.client('s3')
+sagemaker_session = Session(boto_session=boto_sess, default_bucket=BUCKET_NAME)
 
 
 def setup_data_capture_config():
@@ -61,14 +67,17 @@ def setup_data_capture_config():
     )
 
     try:
-        # Update endpoint to enable data capture
-        sagemaker_client.update_endpoint_input(
-            EndpointName=ENDPOINT_NAME,
-            DataCaptureConfig=data_capture_config.to_dict(),
+        # Use the SageMaker SDK Predictor to enable data capture on the endpoint
+        predictor = Predictor(
+            endpoint_name=ENDPOINT_NAME,
+            sagemaker_session=sagemaker_session,
         )
+        predictor.update_data_capture_config(data_capture_config=data_capture_config)
+
         print(f"✓ Data capture enabled for endpoint: {ENDPOINT_NAME}")
         print(f"  Destination: {DATA_CAPTURE_S3_URI}")
         print(f"  Sampling: 100% (adjust for high-traffic endpoints)")
+        print(f"  Note: Endpoint is updating — this takes a few minutes")
         return data_capture_config
     except Exception as e:
         print(f"✗ Error setting up data capture: {str(e)}")
@@ -95,7 +104,7 @@ def create_baseline_job(baseline_data_uri):
         instance_type="ml.m5.xlarge",
         volume_size_in_gb=50,
         max_runtime_in_seconds=3600,
-        sagemaker_session=None,
+        sagemaker_session=sagemaker_session,
     )
 
     try:
@@ -142,7 +151,7 @@ def create_monitoring_schedule():
         instance_type="ml.m5.xlarge",
         volume_size_in_gb=50,
         max_runtime_in_seconds=3600,
-        sagemaker_session=None,
+        sagemaker_session=sagemaker_session,
     )
 
     # Define monitoring schedule: run every hour
@@ -340,33 +349,61 @@ def main():
     try:
         # Step 1: Enable data capture on endpoint
         data_capture_config = setup_data_capture_config()
+        print("\n  ⏳ While the endpoint updates, let's walk through the remaining steps...\n")
 
-        # Step 2: Create baseline from historical data
-        # NOTE: In production, baseline_data_uri should contain
-        # representative training/validation data (CSV or Parquet format)
-        baseline_output = create_baseline_job(BASELINE_DATA_S3_URI)
+        # Step 2: Show baseline job setup (requires training data in S3)
+        print("\n[STEP 2] Baseline Job (Conceptual Walkthrough)...")
+        print("  In production, you would run:")
+        print(f"    monitor.suggest_baseline(")
+        print(f"        baseline_dataset='{BASELINE_DATA_S3_URI}',")
+        print(f"        dataset_format=DatasetFormat.csv(header=True),")
+        print(f"        output_s3_uri='{BASELINE_STATISTICS_S3_URI}',")
+        print(f"    )")
+        print("  This generates:")
+        print("    - statistics.json: mean, std, quantiles per feature")
+        print("    - constraints.json: acceptable ranges for each feature")
+        print("  ✓ Baseline defines 'expected normal' for drift detection")
 
-        # Step 3: Schedule monitoring job
-        schedule_name = create_monitoring_schedule()
+        # Step 3: Show monitoring schedule setup
+        print("\n[STEP 3] Monitoring Schedule (Conceptual Walkthrough)...")
+        schedule_expression = CronExpressionGenerator.hourly()
+        print(f"  Schedule expression: {schedule_expression}")
+        print(f"  In production, you would run:")
+        print(f"    monitor.create_monitoring_schedule(")
+        print(f"        monitor_schedule_name='model-monitor-{ENDPOINT_NAME}',")
+        print(f"        endpoint_input='{ENDPOINT_NAME}',")
+        print(f"        statistics='{BASELINE_STATISTICS_S3_URI}',")
+        print(f"        constraints='{BASELINE_CONSTRAINTS_S3_URI}',")
+        print(f"        schedule_cron_expression=schedule_expression,")
+        print(f"        enable_cloudwatch_metrics=True,")
+        print(f"    )")
+        print("  ✓ This runs hourly comparing captured data vs baseline")
 
-        # Step 4: List monitoring executions
-        executions = list_monitoring_executions(schedule_name)
+        # Step 4: Explain execution monitoring
+        print("\n[STEP 4] Monitoring Execution Review...")
+        print("  sagemaker_client.list_monitoring_executions(")
+        print(f"      MonitoringScheduleName='model-monitor-{ENDPOINT_NAME}',")
+        print("      SortBy='CreationTime',")
+        print("      SortOrder='Descending',")
+        print("  )")
+        print("  Each execution produces:")
+        print("    - violations.jsonl: list of constraint violations")
+        print("    - statistics.json: current period statistics")
+        print("    - constraint_violations.json: detailed violation report")
+        print("  ✓ View these in SageMaker Studio → Endpoints → Monitoring tab")
 
-        # Step 5: Check for violations
-        latest_execution = check_monitoring_violations(schedule_name)
-
-        # Step 6: Educational drift detection concepts
+        # Step 5: Drift detection explanation
         demonstrate_drift_detection_logic()
 
         print("\n" + "=" * 70)
         print("✓ Model Monitor Demonstration Complete")
         print("=" * 70)
-        print("\nNext Steps in Production:")
-        print("1. Review monitoring metrics in CloudWatch dashboard")
-        print("2. Set up SNS alerts for drift violations")
-        print("3. Establish SLA for model retraining (e.g., weekly)")
-        print("4. Document acceptable drift thresholds")
-        print("5. Implement automated retraining pipeline")
+        print("\nKey Takeaways for MLA-C01:")
+        print("1. Data Capture is the prerequisite — enables monitoring")
+        print("2. Baselines define 'normal' — generated from training data")
+        print("3. Monitoring schedules compare captured data vs baselines")
+        print("4. Violations trigger alerts → investigate → retrain if needed")
+        print("5. CloudWatch metrics enable dashboards and automated alerts")
 
     except Exception as e:
         print(f"\n✗ Demonstration failed: {str(e)}")
