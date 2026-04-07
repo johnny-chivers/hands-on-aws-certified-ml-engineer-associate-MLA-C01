@@ -73,11 +73,11 @@ try:
 
     # Generate synthetic test data
     y_true = np.random.randint(0, 2, n_samples)  # Binary classification (0 or 1)
-    # Model predictions (probabilities)
-    y_pred_proba = np.random.rand(n_samples)
 
-    # Make predictions correlated with truth (simulate reasonable model)
-    y_pred_proba = y_pred_proba * 0.3 + np.array(y_true) * 0.7 + np.random.normal(0, 0.1, n_samples)
+    # Simulate a realistic (imperfect) model with AUC ~0.85-0.90
+    # Add enough noise so the model makes mistakes — gives a nice curved ROC
+    noise = np.random.normal(0, 0.35, n_samples)
+    y_pred_proba = np.array(y_true, dtype=float) * 0.5 + 0.25 + noise
     y_pred_proba = np.clip(y_pred_proba, 0, 1)  # Keep in [0, 1]
 
     # Binary predictions at threshold 0.5
