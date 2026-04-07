@@ -16,7 +16,6 @@ This demo shows how to:
 """
 
 import boto3
-import json
 import time
 import logging
 from sagemaker import Session
@@ -140,11 +139,11 @@ def invoke_and_measure(payload_csv: str, label: str = ""):
     response = sagemaker_runtime.invoke_endpoint(
         EndpointName=ENDPOINT_NAME,
         ContentType="text/csv",
-        Accept="application/json",
+        Accept="text/csv",  # XGBoost built-in returns CSV, not JSON
         Body=payload_csv.encode("utf-8"),
     )
     elapsed_ms = (time.time() - start) * 1000
-    result = json.loads(response["Body"].read().decode("utf-8"))
+    result = response["Body"].read().decode("utf-8").strip()
 
     logger.info("[%s] Prediction: %s  |  Latency: %.0f ms", label, result, elapsed_ms)
     return result, elapsed_ms
@@ -152,7 +151,8 @@ def invoke_and_measure(payload_csv: str, label: str = ""):
 
 def demonstrate_cold_vs_warm():
     """Show the cold-start penalty followed by warm invocations."""
-    sample = "8.3252,41.0,6.984127,1.023810,322.0,2.555556,-122.23,37.88"
+    # 5 features matching training data: SquareFeet, Bedrooms, Bathrooms, YearBuilt, Garage
+    sample = "2500.0,3,2.5,2005,2"
 
     logger.info("\n--- Cold-start invocation (first call after idle) ---")
     _, cold_ms = invoke_and_measure(sample, label="COLD")
