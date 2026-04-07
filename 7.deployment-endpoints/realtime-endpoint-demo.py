@@ -156,11 +156,11 @@ def invoke_endpoint(payload_csv: str):
     response = sagemaker_runtime.invoke_endpoint(
         EndpointName=ENDPOINT_NAME,
         ContentType="text/csv",
-        Accept="application/json",
+        Accept="text/csv",  # XGBoost built-in returns CSV, not JSON
         Body=payload_csv.encode("utf-8"),
     )
 
-    result = json.loads(response["Body"].read().decode("utf-8"))
+    result = response["Body"].read().decode("utf-8").strip()
     logger.info("Prediction result: %s", result)
     return result
 
@@ -257,7 +257,8 @@ def main():
     describe_endpoint()
 
     # 5. Invoke with sample data  (8 features — matches housing dataset)
-    sample_row = "8.3252,41.0,6.984127,1.023810,322.0,2.555556,-122.23,37.88"
+    # 5 features matching training data: SquareFeet, Bedrooms, Bathrooms, YearBuilt, Garage
+    sample_row = "2500.0,3,2.5,2005,2"
     invoke_endpoint(sample_row)
 
     # 6. Cleanup (uncomment when you're done recording)
