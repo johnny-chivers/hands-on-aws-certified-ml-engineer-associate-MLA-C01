@@ -267,11 +267,9 @@ try:
         plt.grid(alpha=0.3)
         plt.tight_layout()
 
-        # Save plot
-        plot_path = "/tmp/roc_curve.png"
-        plt.savefig(plot_path, dpi=100)
-        logger.info(f"✓ ROC Curve saved to {plot_path}")
-        plt.close()
+        # Display plot inline in notebook
+        plt.show()
+        logger.info("✓ ROC Curve displayed")
 
     except Exception as e:
         logger.warning(f"Could not create ROC plot: {e}")
@@ -320,15 +318,15 @@ try:
 
     # SHAP Configuration
     shap_config = SHAPConfig(
-        enable_shap_baseline_model=True,
-        use_logit=False,  # For regression; True for classification with sigmoid
-        num_samples=100,  # Number of SHAP samples
-        agg_method="mean_abs",  # mean_abs or median for aggregation
+        # num_clusters: Clarify computes SHAP baseline by clustering the dataset
+        # Higher values = more accurate baseline, slower computation
+        num_clusters=1,
+        # agg_method: How to aggregate SHAP values across samples
+        agg_method="mean_abs",  # mean_abs or median
     )
 
     logger.info(f"SHAP Configuration:")
-    logger.info(f"  Enable baseline: {shap_config.enable_shap_baseline_model}")
-    logger.info(f"  Num samples: 100")
+    logger.info(f"  Num clusters for baseline: 1")
     logger.info(f"  Aggregation: mean_abs")
 
     # Model Configuration (for endpoint-based explanation)
