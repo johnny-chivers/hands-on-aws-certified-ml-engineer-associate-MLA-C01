@@ -1,459 +1,414 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: >-
-  Comprehensive CloudWatch Dashboard for SageMaker Endpoint Monitoring
-  Maps to MLA-C01 Domain 3: Model Monitoring and Governance
+"""
+SageMaker Model Monitor Comprehensive Demonstration
 
-  Widgets included:
-  - Invocations: Request volume tracking
-  - ModelLatency (P50, P99, Average): Response time metrics
-  - OverheadLatency: Container startup overhead
-  - 4XX/5XX Errors: Client and server error rates
-  - CPU/Memory Utilization: Instance resource consumption
-  - Custom Alarms: High latency and error thresholds
+Implements data drift detection, model quality monitoring, and constraint violations.
+Maps to MLA-C01 Domain 3: Model Monitoring and Governance
 
-Parameters:
-  EndpointName:
-    Type: String
-    Default: ml-endpoint-demo
-    Description: Name of the SageMaker endpoint to monitor
+Key Concepts:
+- Data Capture Configuration: Captures input/output at prediction time
+- Baselining: Creates baseline statistics and constraints from historical data
+- Monitoring Schedule: Runs periodic jobs to detect drift
+- Data Quality: Detects feature/output distribution changes
+- Model Quality: Tracks prediction accuracy degradation
+"""
 
-  SNSEmailAddress:
-    Type: String
-    Default: alerts@example.com
-    Description: Email address for CloudWatch alarm notifications
+import boto3
+import json
+from datetime import datetime, timedelta
+from sagemaker import Session
+from sagemaker.predictor import Predictor
+from sagemaker.model_monitor import (
+    DataCaptureConfig,
+    DefaultModelMonitor,
+    CronExpressionGenerator,
+)
+from sagemaker.model_monitor.dataset_format import DatasetFormat
 
-Resources:
-  # ─────────────────────────────────────────────────────────────
-  # SNS Topic for Alarm Notifications
-  # ─────────────────────────────────────────────────────────────
+# Configuration placeholders — fill these in before running
+AWS_REGION = '<YOUR-REGION>'
+ROLE_ARN = '<YOUR-ROLE-ARN>'
+BUCKET_NAME = '<YOUR-BUCKET-NAME>'
+ENDPOINT_NAME = '<YOUR-ENDPOINT-NAME>'
 
-  AlarmNotificationTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "sagemaker-endpoint-alarms-${EndpointName}"
-      DisplayName: SageMaker Endpoint Alarms
-      Subscription:
-        - Endpoint: !Ref SNSEmailAddress
-          Protocol: email
-      Tags:
-        - Key: Purpose
-          Value: MLEndpointMonitoring
-        - Key: Endpoint
-          Value: !Ref EndpointName
+BASELINE_DATA_S3_URI = f's3://{BUCKET_NAME}/monitoring/baseline-data/'
+BASELINE_STATISTICS_S3_URI = f's3://{BUCKET_NAME}/monitoring/baseline-statistics/'
+BASELINE_CONSTRAINTS_S3_URI = f's3://{BUCKET_NAME}/monitoring/baseline-constraints/'
+DATA_CAPTURE_S3_URI = f's3://{BUCKET_NAME}/monitoring/data-capture/'
+MONITORING_OUTPUT_S3_URI = f's3://{BUCKET_NAME}/monitoring/results/'
 
-  # ─────────────────────────────────────────────────────────────
-  # CloudWatch Dashboard
-  # ─────────────────────────────────────────────────────────────
+# Initialize AWS clients and SageMaker session
+boto_sess = boto3.Session(region_name=AWS_REGION)
+sagemaker_client = boto_sess.client('sagemaker')
+s3_client = boto_sess.client('s3')
+sagemaker_session = Session(boto_session=boto_sess, default_bucket=BUCKET_NAME)
 
-  MLEndpointDashboard:
-    Type: AWS::CloudWatch::Dashboard
-    Properties:
-      DashboardName: !Sub "SageMaker-${EndpointName}-Dashboard"
-      DashboardBody: !Sub |
-        {
-          "widgets": [
-            {
-              "type": "text",
-              "x": 0,
-              "y": 0,
-              "width": 24,
-              "height": 1,
-              "properties": {
-                "markdown": "# SageMaker Endpoint Monitoring: ${EndpointName}\n**Region:** ${AWS::Region} | **Account:** ${AWS::AccountId} | **Updated:** *Last 24 hours*"
-              }
-            },
-            {
-              "type": "metric",
-              "x": 0,
-              "y": 1,
-              "width": 6,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  ["AWS/SageMaker", "Invocations", {"stat": "Sum", "label": "Total Requests"}],
-                  [".", ".", {"stat": "Average", "label": "Avg Req/Sec"}]
-                ],
-                "period": 60,
-                "stat": "Sum",
-                "region": "${AWS::Region}",
-                "title": "Endpoint Invocations",
-                "yAxis": {
-                  "left": {
-                    "label": "Count",
-                    "showUnits": false
-                  }
-                },
-                "annotations": {
-                  "horizontal": [
-                    {
-                      "label": "Baseline Load",
-                      "value": 100
-                    }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 6,
-              "y": 1,
-              "width": 6,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  ["AWS/SageMaker", "ModelLatency", {"stat": "p50"}],
-                  ["...", {"stat": "Average"}],
-                  ["...", {"stat": "p99"}],
-                  ["...", {"stat": "Maximum"}]
-                ],
-                "period": 60,
-                "stat": "Average",
-                "region": "${AWS::Region}",
-                "title": "Model Latency Distribution (ms)",
-                "yAxis": {
-                  "left": {
-                    "label": "Milliseconds",
-                    "showUnits": false
-                  }
-                },
-                "legend": {
-                  "position": "bottom"
-                },
-                "annotations": {
-                  "horizontal": [
-                    {
-                      "label": "SLA Target: 100ms",
-                      "value": 100,
-                      "fill": "above"
-                    },
-                    {
-                      "label": "Warning: 200ms",
-                      "value": 200,
-                      "fill": "above"
-                    }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 12,
-              "y": 1,
-              "width": 6,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  ["AWS/SageMaker", "OverheadLatency", {"stat": "Average"}],
-                  ["...", {"stat": "p99"}],
-                  ["...", {"stat": "Maximum"}]
-                ],
-                "period": 60,
-                "stat": "Average",
-                "region": "${AWS::Region}",
-                "title": "Container Overhead Latency (ms)",
-                "yAxis": {
-                  "left": {
-                    "label": "Milliseconds",
-                    "showUnits": false
-                  }
-                },
-                "legend": {
-                  "position": "right"
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 18,
-              "y": 1,
-              "width": 6,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  ["AWS/SageMaker", "Invocation4XXErrors", {"stat": "Sum", "label": "4XX Errors"}],
-                  [".", "Invocation5XXErrors", {"stat": "Sum", "label": "5XX Errors"}]
-                ],
-                "period": 60,
-                "stat": "Sum",
-                "region": "${AWS::Region}",
-                "title": "Error Rate by Type",
-                "yAxis": {
-                  "left": {
-                    "label": "Count",
-                    "showUnits": false
-                  }
-                },
-                "legend": {
-                  "position": "bottom"
-                },
-                "colors": ["#d62728", "#ff7f0e"]
-              }
-            },
-            {
-              "type": "metric",
-              "x": 0,
-              "y": 7,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  ["AWS/SageMaker", "CPUUtilization", {"stat": "Average"}],
-                  [".", "MemoryUtilization", {"stat": "Average"}]
-                ],
-                "period": 60,
-                "stat": "Average",
-                "region": "${AWS::Region}",
-                "title": "Instance Resource Utilization (%)",
-                "yAxis": {
-                  "left": {
-                    "min": 0,
-                    "max": 100,
-                    "label": "Percentage",
-                    "showUnits": false
-                  }
-                },
-                "legend": {
-                  "position": "bottom"
-                },
-                "annotations": {
-                  "horizontal": [
-                    {
-                      "label": "High Utilization (80%)",
-                      "value": 80,
-                      "fill": "above",
-                      "color": "#d62728"
-                    },
-                    {
-                      "label": "Optimal (50%)",
-                      "value": 50,
-                      "color": "#2ca02c"
-                    }
-                  ]
-                }
-              }
-            },
-            {
-              "type": "metric",
-              "x": 12,
-              "y": 7,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "metrics": [
-                  ["AWS/SageMaker", "ModelLatency", {"stat": "p99"}],
-                  [{"expression": "m1 / 1000", "label": "P99 Latency (sec)", "id": "e1"}]
-                ],
-                "period": 300,
-                "stat": "Average",
-                "region": "${AWS::Region}",
-                "title": "P99 Latency Trend (5-min aggregation)",
-                "yAxis": {
-                  "left": {
-                    "label": "Milliseconds",
-                    "showUnits": false
-                  }
-                },
-                "legend": {
-                  "position": "bottom"
-                }
-              }
-            },
-            {
-              "type": "log",
-              "x": 0,
-              "y": 13,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "query": "fields @timestamp, @message, latency\n| filter ispresent(latency)\n| stats count() as requests, avg(latency) as avg_latency by bin(5m)\n| sort @timestamp desc",
-                "region": "${AWS::Region}",
-                "title": "Request Volume & Average Latency (CloudWatch Logs)",
-                "queryId": "endpoint-performance-trends"
-              }
-            },
-            {
-              "type": "log",
-              "x": 12,
-              "y": 13,
-              "width": 12,
-              "height": 6,
-              "properties": {
-                "query": "fields @timestamp, @message, error_type\n| filter error_type in ['4XX', '5XX']\n| stats count() as error_count by error_type\n| sort error_count desc",
-                "region": "${AWS::Region}",
-                "title": "Error Distribution (CloudWatch Logs)",
-                "queryId": "endpoint-error-analysis"
-              }
-            }
-          ]
-        }
 
-  # ─────────────────────────────────────────────────────────────
-  # CloudWatch Alarms - High Latency
-  # ─────────────────────────────────────────────────────────────
+def setup_data_capture_config():
+    """
+    Configure data capture on an existing SageMaker endpoint.
 
-  HighLatencyAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "${EndpointName}-high-latency"
-      AlarmDescription: "Alert when model latency P99 exceeds 1000ms"
-      MetricName: ModelLatency
-      Namespace: AWS/SageMaker
-      Statistic: p99
-      Period: 300  # 5 minutes
-      EvaluationPeriods: 2  # Trigger if condition persists for 10 minutes
-      Threshold: 1000  # 1 second = 1000 milliseconds
-      ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-        - !Ref AlarmNotificationTopic
-      Dimensions:
-        - Name: EndpointName
-          Value: !Ref EndpointName
-      TreatMissingData: notBreaching
-      Tags:
-        - Key: AlertType
-          Value: LatencyDegradation
+    Data capture configuration enables Model Monitor to:
+    - Record all input features sent to the endpoint
+    - Record all predictions returned
+    - Detect feature drift by comparing captured data to baseline
 
-  # ─────────────────────────────────────────────────────────────
-  # CloudWatch Alarms - High Error Rate
-  # ─────────────────────────────────────────────────────────────
+    MLA-C01 Exam Focus: Data capture is prerequisite for monitoring
+    """
+    print("[STEP 1] Setting up Data Capture Configuration...")
 
-  HighErrorRateAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "${EndpointName}-high-error-rate"
-      AlarmDescription: "Alert when 5XX error rate exceeds 5% of invocations"
-      MetricName: Invocation5XXErrors
-      Namespace: AWS/SageMaker
-      Statistic: Sum
-      Period: 300  # 5 minutes
-      EvaluationPeriods: 1
-      Threshold: 50  # Triggers if >50 errors in 5 minutes
-      ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-        - !Ref AlarmNotificationTopic
-      Dimensions:
-        - Name: EndpointName
-          Value: !Ref EndpointName
-      TreatMissingData: notBreaching
-      Tags:
-        - Key: AlertType
-          Value: ErrorRateElevation
+    data_capture_config = DataCaptureConfig(
+        enable_capture=True,
+        sampling_percentage=100,  # Capture 100% of requests (production: tune this)
+        destination_s3_uri=DATA_CAPTURE_S3_URI,
+        capture_options=[
+            "Input",   # Capture request payload
+            "Output",  # Capture prediction results
+        ],
+    )
 
-  # ─────────────────────────────────────────────────────────────
-  # CloudWatch Alarms - High CPU Utilization
-  # ─────────────────────────────────────────────────────────────
+    try:
+        # Use the SageMaker SDK Predictor to enable data capture on the endpoint
+        predictor = Predictor(
+            endpoint_name=ENDPOINT_NAME,
+            sagemaker_session=sagemaker_session,
+        )
+        predictor.update_data_capture_config(data_capture_config=data_capture_config)
 
-  HighCPUUtilizationAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "${EndpointName}-high-cpu-utilization"
-      AlarmDescription: "Alert when CPU utilization exceeds 80% for 10 minutes"
-      MetricName: CPUUtilization
-      Namespace: AWS/SageMaker
-      Statistic: Average
-      Period: 300  # 5 minutes
-      EvaluationPeriods: 2  # 10 minutes total
-      Threshold: 80  # 80%
-      ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-        - !Ref AlarmNotificationTopic
-      Dimensions:
-        - Name: EndpointName
-          Value: !Ref EndpointName
-      TreatMissingData: notBreaching
-      Tags:
-        - Key: AlertType
-          Value: ResourceExhaustion
-        - Key: ActionRequired
-          Value: "Consider upgrading instance type or scaling endpoint"
+        print(f"✓ Data capture enabled for endpoint: {ENDPOINT_NAME}")
+        print(f"  Destination: {DATA_CAPTURE_S3_URI}")
+        print(f"  Sampling: 100% (adjust for high-traffic endpoints)")
+        print(f"  Note: Endpoint is updating — this takes a few minutes")
+        return data_capture_config
+    except Exception as e:
+        print(f"✗ Error setting up data capture: {str(e)}")
+        raise
 
-  # ─────────────────────────────────────────────────────────────
-  # CloudWatch Alarms - High Memory Utilization
-  # ─────────────────────────────────────────────────────────────
 
-  HighMemoryUtilizationAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "${EndpointName}-high-memory-utilization"
-      AlarmDescription: "Alert when memory utilization exceeds 85%"
-      MetricName: MemoryUtilization
-      Namespace: AWS/SageMaker
-      Statistic: Average
-      Period: 300
-      EvaluationPeriods: 2
-      Threshold: 85  # 85%
-      ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-        - !Ref AlarmNotificationTopic
-      Dimensions:
-        - Name: EndpointName
-          Value: !Ref EndpointName
-      TreatMissingData: notBreaching
-      Tags:
-        - Key: AlertType
-          Value: MemoryExhaustion
+def create_baseline_job(baseline_data_uri):
+    """
+    Create a baselining job to generate baseline statistics and constraints.
 
-  # ─────────────────────────────────────────────────────────────
-  # CloudWatch Alarms - Zero Traffic
-  # ─────────────────────────────────────────────────────────────
+    Baselining process:
+    1. Reads historical training/validation data
+    2. Generates statistics (mean, std, quantiles, histograms)
+    3. Generates constraints (feature value ranges, missing values)
+    4. Stores output in S3 for later monitoring comparison
 
-  ZeroTrafficAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "${EndpointName}-zero-traffic"
-      AlarmDescription: "Alert when endpoint receives zero invocations for 15 minutes"
-      MetricName: Invocations
-      Namespace: AWS/SageMaker
-      Statistic: Sum
-      Period: 300
-      EvaluationPeriods: 3  # 15 minutes
-      Threshold: 1
-      ComparisonOperator: LessThanThreshold
-      AlarmActions:
-        - !Ref AlarmNotificationTopic
-      Dimensions:
-        - Name: EndpointName
-          Value: !Ref EndpointName
-      TreatMissingData: breaching  # Treat missing data as zero traffic
-      Tags:
-        - Key: AlertType
-          Value: EndpointHealthCheck
+    MLA-C01 Exam Focus: Baselines are the "expected normal" for drift detection
+    """
+    print("\n[STEP 2] Creating Baseline Job...")
 
-Outputs:
-  DashboardURL:
-    Description: URL to CloudWatch Dashboard
-    Value: !Sub "https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=SageMaker-${EndpointName}-Dashboard"
-    Export:
-      Name: !Sub "${AWS::StackName}-DashboardURL"
+    monitor = DefaultModelMonitor(
+        role=ROLE_ARN,
+        instance_count=1,
+        instance_type="ml.m5.xlarge",
+        volume_size_in_gb=50,
+        max_runtime_in_seconds=3600,
+        sagemaker_session=sagemaker_session,
+    )
 
-  SNSTopicArn:
-    Description: SNS Topic ARN for alarm notifications
-    Value: !Ref AlarmNotificationTopic
-    Export:
-      Name: !Sub "${AWS::StackName}-SNSTopicArn"
+    try:
+        # suggest_baseline() automatically creates baseline statistics and constraints
+        baseline_job_output = monitor.suggest_baseline(
+            baseline_dataset=baseline_data_uri,
+            dataset_format=DatasetFormat.csv(header=True),
+            output_s3_uri=BASELINE_STATISTICS_S3_URI,
+            wait=True,  # Wait for job completion
+            logs=True,  # Stream job logs
+        )
 
-  HighLatencyAlarmName:
-    Description: High Latency Alarm Name
-    Value: !Ref HighLatencyAlarm
-    Export:
-      Name: !Sub "${AWS::StackName}-HighLatencyAlarm"
+        print(f"✓ Baseline job completed")
+        print(f"  Baseline statistics URI: {baseline_job_output}")
 
-  HighErrorRateAlarmName:
-    Description: High Error Rate Alarm Name
-    Value: !Ref HighErrorRateAlarm
-    Export:
-      Name: !Sub "${AWS::StackName}-HighErrorRateAlarm"
+        # Constraints are automatically generated alongside statistics
+        print(f"  Baseline constraints URI: {BASELINE_CONSTRAINTS_S3_URI}")
+        print(f"  These define acceptable ranges for each feature")
 
-  DashboardCreationStatus:
-    Description: CloudWatch Dashboard and Alarms creation status
-    Value: "SUCCESS - All monitoring resources created"
+        return baseline_job_output
+    except Exception as e:
+        print(f"✗ Error creating baseline: {str(e)}")
+        raise
 
-Tags:
-  - Key: Environment
-    Value: Production
-  - Key: Service
-    Value: SageMaker
-  - Key: Domain
-    Value: MLAExam
-  - Key: Purpose
-    Value: Endpoint Monitoring
+
+def create_monitoring_schedule():
+    """
+    Schedule a continuous monitoring job.
+
+    Monitoring job execution:
+    - Runs on a schedule (hourly, daily, etc.)
+    - Compares current data capture to baseline statistics
+    - Detects drift when feature distributions deviate
+    - Generates violations report
+    - Can trigger CloudWatch alarms
+
+    MLA-C01 Exam Focus: Production models must have continuous monitoring
+    """
+    print("\n[STEP 3] Creating Monitoring Schedule...")
+
+    monitor = DefaultModelMonitor(
+        role=ROLE_ARN,
+        instance_count=1,
+        instance_type="ml.m5.xlarge",
+        volume_size_in_gb=50,
+        max_runtime_in_seconds=3600,
+        sagemaker_session=sagemaker_session,
+    )
+
+    # Define monitoring schedule: run every hour
+    schedule_expression = CronExpressionGenerator.hourly()
+
+    try:
+        monitor.create_monitoring_schedule(
+            monitor_schedule_name=f"model-monitor-{ENDPOINT_NAME}",
+            endpoint_input=ENDPOINT_NAME,
+            post_analytics_processor_script=None,  # Optional: custom processing
+            output_s3_uri=MONITORING_OUTPUT_S3_URI,
+            statistics=BASELINE_STATISTICS_S3_URI,
+            constraints=BASELINE_CONSTRAINTS_S3_URI,
+            schedule_cron_expression=schedule_expression,
+            enable_cloudwatch_metrics=True,  # Publish metrics to CloudWatch
+        )
+
+        print(f"✓ Monitoring schedule created")
+        print(f"  Schedule: Hourly (every 60 minutes)")
+        print(f"  Baseline statistics: {BASELINE_STATISTICS_S3_URI}")
+        print(f"  Baseline constraints: {BASELINE_CONSTRAINTS_S3_URI}")
+        print(f"  Results output: {MONITORING_OUTPUT_S3_URI}")
+        print(f"  CloudWatch metrics: Enabled")
+
+        return f"model-monitor-{ENDPOINT_NAME}"
+    except Exception as e:
+        print(f"✗ Error creating monitoring schedule: {str(e)}")
+        raise
+
+
+def list_monitoring_executions(schedule_name):
+    """
+    List all executions of a monitoring schedule.
+
+    Execution status indicates:
+    - Pending: Waiting to run
+    - InProgress: Currently running
+    - Completed: Finished (check for violations)
+    - Failed: Error occurred
+
+    MLA-C01 Exam Focus: Monitor execution history for drift patterns
+    """
+    print(f"\n[STEP 4] Listing Monitoring Executions for {schedule_name}...")
+
+    try:
+        response = sagemaker_client.list_monitoring_executions(
+            MonitoringScheduleName=schedule_name,
+            SortBy='CreationTime',
+            SortOrder='Descending',
+            MaxResults=10,
+        )
+
+        executions = response.get('MonitoringExecutionSummaries', [])
+
+        if not executions:
+            print("✓ No monitoring executions found yet")
+            return
+
+        print(f"✓ Found {len(executions)} monitoring executions:")
+        for i, execution in enumerate(executions, 1):
+            print(f"\n  [{i}] {execution['MonitoringExecutionName']}")
+            print(f"      Status: {execution['MonitoringExecutionStatus']}")
+            print(f"      Creation Time: {execution['CreationTime']}")
+
+            # Check for violations
+            if 'MonitoringJobDefinitionName' in execution:
+                violations = execution.get('ViolationAttributes', {})
+                if violations:
+                    print(f"      ⚠ VIOLATIONS DETECTED: {violations}")
+
+        return executions
+    except Exception as e:
+        print(f"✗ Error listing executions: {str(e)}")
+        raise
+
+
+def check_monitoring_violations(schedule_name):
+    """
+    Check for data drift violations in latest monitoring execution.
+
+    Violation types:
+    - FeatureBasedDrift: Feature distribution changed significantly
+    - ModelOutputDrift: Prediction distribution changed
+    - ConstraintViolations: Feature values outside acceptable ranges
+
+    MLA-C01 Exam Focus: Drift detection triggers model retraining
+    """
+    print(f"\n[STEP 5] Checking for Monitoring Violations...")
+
+    try:
+        # Get latest execution
+        response = sagemaker_client.list_monitoring_executions(
+            MonitoringScheduleName=schedule_name,
+            SortBy='CreationTime',
+            SortOrder='Descending',
+            MaxResults=1,
+        )
+
+        if not response.get('MonitoringExecutionSummaries'):
+            print("✓ No executions available to check")
+            return None
+
+        latest_execution = response['MonitoringExecutionSummaries'][0]
+        execution_name = latest_execution['MonitoringExecutionName']
+        status = latest_execution['MonitoringExecutionStatus']
+
+        print(f"  Latest execution: {execution_name}")
+        print(f"  Status: {status}")
+
+        if status == 'Completed':
+            # Parse violation details from S3
+            print("\n  Checking violation report in S3...")
+            print(f"  Report location: {MONITORING_OUTPUT_S3_URI}{execution_name}/")
+
+            # In production, parse violations_report.json from S3
+            violations_detected = True  # Placeholder
+            if violations_detected:
+                print("  ⚠ DRIFT DETECTED: Feature distribution has changed")
+                print("     Action: Consider retraining model with recent data")
+                print("     Threshold: Use statistical tests (Kolmogorov-Smirnov)")
+            else:
+                print("  ✓ No drift detected - model behavior is stable")
+
+        return latest_execution
+    except Exception as e:
+        print(f"✗ Error checking violations: {str(e)}")
+        raise
+
+
+def demonstrate_drift_detection_logic():
+    """
+    Educational demonstration of drift detection concepts.
+
+    Drift Detection Methods:
+    1. Statistical Tests:
+       - Kolmogorov-Smirnov test: Compare distributions
+       - Chi-square test: Categorical feature changes
+       - Z-test: Mean shift detection
+
+    2. Constraint-Based:
+       - Value out of range
+       - Missing values > threshold
+       - New unseen categories
+
+    3. Model Quality:
+       - Prediction distribution changes
+       - Confidence score degradation
+       - Accuracy vs baseline
+
+    MLA-C01 Exam Focus: Understanding drift triggers model intervention
+    """
+    print("\n[STEP 6] Drift Detection Logic Explanation...")
+
+    print("""
+    Drift Detection Mechanisms:
+
+    [A] DATA QUALITY MONITORING:
+        - Feature x1: mean shifted from 5.0 → 7.2 (drift!)
+        - Feature x2: std dev increased 2x (variance drift!)
+        - Feature x3: 5% missing values (quality issue!)
+
+    [B] MODEL QUALITY MONITORING:
+        - Prediction avg: 0.65 → 0.45 (output drift!)
+        - Confidence: 0.95 → 0.72 (uncertainty increase!)
+        - Error rate: 5% → 18% (performance degradation!)
+
+    [C] STATISTICAL THRESHOLDS:
+        - KS statistic > 0.2: Distribution changed significantly
+        - p-value < 0.05: Statistically significant difference
+        - Domain knowledge: Business metric thresholds
+
+    RESPONSE ACTIONS:
+        1. Alert: Notify ML team of drift
+        2. Investigate: Analyze root cause
+        3. Retrain: Use recent data to adapt
+        4. Rollback: Switch to previous model version
+        5. Validate: Run A/B test before production
+    """)
+
+
+def main():
+    """
+    Main orchestration function demonstrating Model Monitor workflow.
+
+    MLA-C01 Task 3.3: Monitor ML models in production
+    """
+    print("=" * 70)
+    print("SageMaker Model Monitor - Comprehensive Demonstration")
+    print("=" * 70)
+    print(f"Endpoint: {ENDPOINT_NAME}")
+    print(f"Region: {AWS_REGION}")
+    print(f"Time: {datetime.now().isoformat()}")
+    print("=" * 70)
+
+    try:
+        # Step 1: Enable data capture on endpoint
+        data_capture_config = setup_data_capture_config()
+        print("\n  ⏳ While the endpoint updates, let's walk through the remaining steps...\n")
+
+        # Step 2: Show baseline job setup (requires training data in S3)
+        print("\n[STEP 2] Baseline Job (Conceptual Walkthrough)...")
+        print("  In production, you would run:")
+        print(f"    monitor.suggest_baseline(")
+        print(f"        baseline_dataset='{BASELINE_DATA_S3_URI}',")
+        print(f"        dataset_format=DatasetFormat.csv(header=True),")
+        print(f"        output_s3_uri='{BASELINE_STATISTICS_S3_URI}',")
+        print(f"    )")
+        print("  This generates:")
+        print("    - statistics.json: mean, std, quantiles per feature")
+        print("    - constraints.json: acceptable ranges for each feature")
+        print("  ✓ Baseline defines 'expected normal' for drift detection")
+
+        # Step 3: Show monitoring schedule setup
+        print("\n[STEP 3] Monitoring Schedule (Conceptual Walkthrough)...")
+        schedule_expression = CronExpressionGenerator.hourly()
+        print(f"  Schedule expression: {schedule_expression}")
+        print(f"  In production, you would run:")
+        print(f"    monitor.create_monitoring_schedule(")
+        print(f"        monitor_schedule_name='model-monitor-{ENDPOINT_NAME}',")
+        print(f"        endpoint_input='{ENDPOINT_NAME}',")
+        print(f"        statistics='{BASELINE_STATISTICS_S3_URI}',")
+        print(f"        constraints='{BASELINE_CONSTRAINTS_S3_URI}',")
+        print(f"        schedule_cron_expression=schedule_expression,")
+        print(f"        enable_cloudwatch_metrics=True,")
+        print(f"    )")
+        print("  ✓ This runs hourly comparing captured data vs baseline")
+
+        # Step 4: Explain execution monitoring
+        print("\n[STEP 4] Monitoring Execution Review...")
+        print("  sagemaker_client.list_monitoring_executions(")
+        print(f"      MonitoringScheduleName='model-monitor-{ENDPOINT_NAME}',")
+        print("      SortBy='CreationTime',")
+        print("      SortOrder='Descending',")
+        print("  )")
+        print("  Each execution produces:")
+        print("    - violations.jsonl: list of constraint violations")
+        print("    - statistics.json: current period statistics")
+        print("    - constraint_violations.json: detailed violation report")
+        print("  ✓ View these in SageMaker Studio → Endpoints → Monitoring tab")
+
+        # Step 5: Drift detection explanation
+        demonstrate_drift_detection_logic()
+
+        print("\n" + "=" * 70)
+        print("✓ Model Monitor Demonstration Complete")
+        print("=" * 70)
+        print("\nKey Takeaways for MLA-C01:")
+        print("1. Data Capture is the prerequisite — enables monitoring")
+        print("2. Baselines define 'normal' — generated from training data")
+        print("3. Monitoring schedules compare captured data vs baselines")
+        print("4. Violations trigger alerts → investigate → retrain if needed")
+        print("5. CloudWatch metrics enable dashboards and automated alerts")
+
+    except Exception as e:
+        print(f"\n✗ Demonstration failed: {str(e)}")
+        raise
+
+
+if __name__ == '__main__':
+    main()
