@@ -221,7 +221,7 @@ def create_model_training_step(parameters, processing_step):
         role=role,
         instance_count=parameters['training_instance_count'],
         instance_type=parameters['training_instance_type'],
-        framework_version='1.5',
+        framework_version='1.5-1',
         py_version='py3',
         sagemaker_session=session,
         hyperparameters={
