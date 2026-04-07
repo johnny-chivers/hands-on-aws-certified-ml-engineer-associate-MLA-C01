@@ -8,9 +8,9 @@ Pipeline Components:
 - Parameters: Input variables for flexibility
 - ProcessingStep: Data transformation using SKLearn
 - TrainingStep: Model training with XGBoost
-- EvaluationStep: Model quality assessment
+- ProcessingStep (Evaluation): Model quality assessment (no separate EvaluationStep class)
 - ConditionStep: Quality gates and approval workflow
-- RegisterModelStep: Model Registry integration for CI/CD
+- RegisterModel: Model Registry integration for CI/CD
 
 Key Concepts:
 - Reusability: Parameterized pipelines reduce code duplication
@@ -22,17 +22,14 @@ Key Concepts:
 import json
 import boto3
 from datetime import datetime
-from sagemaker import Session, get_execution_role
+from sagemaker import Session, image_uris
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.xgboost.estimator import XGBoost
 from sagemaker.processing import ScriptProcessor
 from sagemaker.model_metrics import ModelMetrics, MetricsSource
-from sagemaker.workflow.steps import (
-    ProcessingStep,
-    TrainingStep,
-    EvaluationStep,
-    ConditionStep,
-)
+from sagemaker.workflow.steps import ProcessingStep, TrainingStep
+from sagemaker.workflow.condition_step import ConditionStep
+from sagemaker.workflow.step_collections import RegisterModel
 from sagemaker.workflow.conditions import ConditionGreaterThan, ConditionLessThan
 from sagemaker.workflow.pipeline import Pipeline
 from sagemaker.workflow.parameters import (
@@ -41,8 +38,7 @@ from sagemaker.workflow.parameters import (
     ParameterFloat,
 )
 from sagemaker.workflow.properties import PropertyFile
-from sagemaker.workflow.steps import RegisterModel
-from sagemaker.estimator import Estimator
+from sagemaker.workflow.functions import JsonGet
 
 # Configuration
 AWS_REGION = '<YOUR-REGION>'
@@ -51,8 +47,11 @@ BUCKET_NAME = '<YOUR-BUCKET-NAME>'
 PIPELINE_NAME = "ml-training-pipeline"
 
 # Initialize SageMaker session
-session = Session(default_bucket=BUCKET_NAME)
-role = ROLE_ARN or get_execution_role()
+session = Session(
+    boto_session=boto3.Session(region_name=AWS_REGION),
+    default_bucket=BUCKET_NAME,
+)
+role = ROLE_ARN
 
 
 # ─────────────────────────────────────────────────────────────
@@ -255,7 +254,7 @@ def create_model_training_step(parameters, processing_step):
     print(f"    - max_depth: {parameters['max_depth']}")
     print(f"    - learning_rate: {parameters['learning_rate']}")
 
-    return training_step
+    return training_step, xgboost_estimator
 
 
 # ─────────────────────────────────────────────────────────────
@@ -281,16 +280,25 @@ def create_model_evaluation_step(parameters, training_step, processing_step):
     print("\n[EVALUATION STEP] Creating model evaluation step...")
 
     # ScriptProcessor for evaluation script
+    eval_image_uri = image_uris.retrieve("xgboost", AWS_REGION, version="1.5-1")
     evaluator = ScriptProcessor(
-        image_uri=session.sagemaker_session.default_bucket(),
+        image_uri=eval_image_uri,
         role=role,
         instance_count=1,
         instance_type="ml.m5.xlarge",
         sagemaker_session=session,
+        command=["python3"],
     )
 
-    # Evaluation step
-    evaluation_step = EvaluationStep(
+    # Property file to capture evaluation metrics
+    evaluation_report = PropertyFile(
+        name="EvaluationMetrics",
+        output_name="evaluation",
+        path="metrics.json",
+    )
+
+    # Evaluation step (uses ProcessingStep — there is no separate EvaluationStep class)
+    evaluation_step = ProcessingStep(
         name="EvaluationStep",
         processor=evaluator,
         code="s3://{}/evaluation/evaluation.py".format(BUCKET_NAME),
@@ -301,13 +309,7 @@ def create_model_evaluation_step(parameters, training_step, processing_step):
         outputs=[
             # Evaluation metrics output
         ],
-        property_files=[
-            PropertyFile(
-                name="EvaluationMetrics",
-                output_name="evaluation",
-                path="metrics.json",
-            )
-        ],
+        property_files=[evaluation_report],
     )
 
     print("✓ Model evaluation step created")
@@ -339,9 +341,11 @@ def create_quality_condition_step(parameters, evaluation_step):
     """
     print("\n[CONDITION STEP] Creating quality gate condition...")
 
-    # Extract RMSE from evaluation metrics
-    rmse_value = evaluation_step.properties.EvaluationMetrics.JsonPath(
-        "$.metrics.rmse"
+    # Extract RMSE from evaluation metrics using JsonGet
+    rmse_value = JsonGet(
+        step_name="EvaluationStep",
+        property_file="EvaluationMetrics",
+        json_path="metrics.rmse",
     )
 
     # Define condition: RMSE must be below threshold
@@ -353,8 +357,8 @@ def create_quality_condition_step(parameters, evaluation_step):
     condition_step = ConditionStep(
         name="QualityGateCondition",
         conditions=[condition],
-        if_true=[],  # Steps to execute if condition is TRUE
-        if_false=[],  # Steps to execute if condition is FALSE
+        if_steps=[],   # Steps to execute if condition is TRUE
+        else_steps=[],  # Steps to execute if condition is FALSE
     )
 
     print("✓ Quality gate condition created")
@@ -369,7 +373,7 @@ def create_quality_condition_step(parameters, evaluation_step):
 # RegisterModelStep: Model Registry Integration
 # ─────────────────────────────────────────────────────────────
 
-def create_model_registration_step(parameters, training_step):
+def create_model_registration_step(parameters, training_step, xgboost_estimator):
     """
     Create RegisterModelStep to register approved models.
 
@@ -388,10 +392,10 @@ def create_model_registration_step(parameters, training_step):
     # Create RegisterModel step
     register_model_step = RegisterModel(
         name="RegisterModelStep",
-        estimator=training_step.properties.TrainingJobName,  # Reference to training job
+        estimator=xgboost_estimator,
         model_data=training_step.properties.ModelArtifacts.S3ModelArtifacts,
         content_types=["text/csv"],
-        response_types=["application/json"],
+        response_types=["text/csv"],
         inference_instances=["ml.m5.xlarge", "ml.m5.2xlarge"],
         transform_instances=["ml.m5.xlarge"],
         model_package_group_name="sagemaker-model-registry-group",
@@ -435,10 +439,10 @@ def create_full_pipeline():
 
     parameters = create_pipeline_parameters()
     processing_step = create_data_processing_step(parameters)
-    training_step = create_model_training_step(parameters, processing_step)
+    training_step, xgboost_estimator = create_model_training_step(parameters, processing_step)
     evaluation_step = create_model_evaluation_step(parameters, training_step, processing_step)
     condition_step = create_quality_condition_step(parameters, evaluation_step)
-    register_model_step = create_model_registration_step(parameters, training_step)
+    register_model_step = create_model_registration_step(parameters, training_step, xgboost_estimator)
 
     # Define pipeline
     pipeline = Pipeline(
