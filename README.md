@@ -60,6 +60,12 @@ find . -name "*.py" -exec sed -i 's|<YOUR-SAGEMAKER-ROLE-ARN>|YOUR_ACTUAL_ROLE_A
 import os
 os.chdir('/home/sagemaker-user/hands-on-aws-certified-ml-engineer-associate-MLA-C01')
 ```
+**Important:** Code to get model uris
+```python
+import sagemaker.image_uris
+image = sagemaker.image_uris.retrieve("xgboost", "us-east-1", version="1.5-1")
+print(image)
+```
 
 No manual S3 folder creation or data upload is needed — each demo script handles its own S3 uploads automatically.
 
