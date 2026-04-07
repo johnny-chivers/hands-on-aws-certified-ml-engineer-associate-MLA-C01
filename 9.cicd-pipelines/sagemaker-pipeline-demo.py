@@ -123,10 +123,10 @@ def create_pipeline_parameters():
     )
 
     print("✓ Parameters defined:")
-    print(f"  - Processing: {processing_instance_type}, count={processing_instance_count}")
-    print(f"  - Training: {training_instance_type}, count={training_instance_count}")
-    print(f"  - Hyperparams: rounds={num_round}, depth={max_depth}, lr={learning_rate}")
-    print(f"  - Quality Gate: RMSE < {rmse_threshold}")
+    print(f"  - Processing: {processing_instance_type.expr}, count={processing_instance_count.expr}")
+    print(f"  - Training: {training_instance_type.expr}, count={training_instance_count.expr}")
+    print(f"  - Hyperparams: rounds={num_round.expr}, depth={max_depth.expr}, lr={learning_rate.expr}")
+    print(f"  - Quality Gate: RMSE < {rmse_threshold.expr}")
 
     return {
         'processing_instance_type': processing_instance_type,
@@ -247,12 +247,12 @@ def create_model_training_step(parameters, processing_step):
     )
 
     print("✓ Model training step created")
-    print(f"  Algorithm: XGBoost (1.5)")
-    print(f"  Instance: {parameters['training_instance_type']} x {parameters['training_instance_count']}")
-    print(f"  Hyperparameters:")
-    print(f"    - num_round: {parameters['num_round']}")
-    print(f"    - max_depth: {parameters['max_depth']}")
-    print(f"    - learning_rate: {parameters['learning_rate']}")
+    print("  Algorithm: XGBoost (1.5)")
+    print(f"  Instance: {parameters['training_instance_type'].expr} x {parameters['training_instance_count'].expr}")
+    print("  Hyperparameters:")
+    print(f"    - num_round: {parameters['num_round'].expr}")
+    print(f"    - max_depth: {parameters['max_depth'].expr}")
+    print(f"    - learning_rate: {parameters['learning_rate'].expr}")
 
     return training_step, xgboost_estimator
 
@@ -362,9 +362,9 @@ def create_quality_condition_step(parameters, evaluation_step):
     )
 
     print("✓ Quality gate condition created")
-    print(f"  Condition: RMSE < {parameters['rmse_threshold']}")
-    print(f"  If TRUE: Proceed to model registration")
-    print(f"  If FALSE: Stop pipeline (quality not met)")
+    print(f"  Condition: RMSE < {parameters['rmse_threshold'].expr}")
+    print("  If TRUE: Proceed to model registration")
+    print("  If FALSE: Stop pipeline (quality not met)")
 
     return condition_step
 
@@ -409,9 +409,9 @@ def create_model_registration_step(parameters, training_step, xgboost_estimator)
     )
 
     print("✓ Model registration step created")
-    print(f"  Approval Status: {parameters['model_approval_status']}")
-    print(f"  Inference Instances: ml.m5.xlarge, ml.m5.2xlarge")
-    print(f"  Transform Instances: ml.m5.xlarge")
+    print(f"  Approval Status: {parameters['model_approval_status'].expr}")
+    print("  Inference Instances: ml.m5.xlarge, ml.m5.2xlarge")
+    print("  Transform Instances: ml.m5.xlarge")
 
     return register_model_step
 
