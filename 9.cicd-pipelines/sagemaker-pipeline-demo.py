@@ -25,7 +25,8 @@ from datetime import datetime
 from sagemaker import Session, image_uris
 from sagemaker.sklearn.processing import SKLearnProcessor
 from sagemaker.xgboost.estimator import XGBoost
-from sagemaker.processing import ScriptProcessor
+from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
+from sagemaker.inputs import TrainingInput
 from sagemaker.model_metrics import ModelMetrics, MetricsSource
 from sagemaker.workflow.steps import ProcessingStep, TrainingStep
 from sagemaker.workflow.condition_step import ConditionStep
@@ -169,16 +170,36 @@ def create_data_processing_step(parameters):
         sagemaker_session=session,
     )
 
-    # Define processing step
+    # Define processing step with proper S3 inputs and outputs
+    input_data_uri = "s3://{}/pipeline/raw-data".format(BUCKET_NAME)
+
     processing_step = ProcessingStep(
         name="PreprocessingStep",
-        code="s3://{}/preprocessing/preprocessing.py".format(BUCKET_NAME),
+        code="s3://{}/pipeline/scripts/preprocessing.py".format(BUCKET_NAME),
         processor=processor,
         inputs=[
-            # Input data location
+            ProcessingInput(
+                source=input_data_uri,
+                destination="/opt/ml/processing/input",
+                input_name="raw-data",
+            ),
         ],
         outputs=[
-            # Output locations for train/validation/test
+            ProcessingOutput(
+                output_name="train",
+                source="/opt/ml/processing/output/train",
+                destination="s3://{}/pipeline/processed/train".format(BUCKET_NAME),
+            ),
+            ProcessingOutput(
+                output_name="validation",
+                source="/opt/ml/processing/output/validation",
+                destination="s3://{}/pipeline/processed/validation".format(BUCKET_NAME),
+            ),
+            ProcessingOutput(
+                output_name="test",
+                source="/opt/ml/processing/output/test",
+                destination="s3://{}/pipeline/processed/test".format(BUCKET_NAME),
+            ),
         ],
         job_arguments=[
             "--train-size",
@@ -236,13 +257,15 @@ def create_model_training_step(parameters, processing_step):
         },
     )
 
-    # Training step definition
+    # Training step — wire train channel to ProcessingStep output
     training_step = TrainingStep(
         name="TrainingStep",
         estimator=xgboost_estimator,
         inputs={
-            # Training data input from ProcessingStep
-            # "training": processing_step.properties.ProcessingOutputConfig.Outputs[0].S3Output.S3Uri,
+            "train": TrainingInput(
+                s3_data=processing_step.properties.ProcessingOutputConfig.Outputs["train"].S3Output.S3Uri,
+                content_type="text/csv",
+            ),
         },
     )
 
