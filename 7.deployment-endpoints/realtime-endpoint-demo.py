@@ -60,10 +60,8 @@ def create_model():
             PrimaryContainer={
                 "Image": CONTAINER_IMAGE_URI,
                 "ModelDataUrl": MODEL_DATA_S3_URI,
-                "Environment": {
-                    "SAGEMAKER_PROGRAM": "inference.py",
-                    "SAGEMAKER_SUBMIT_DIRECTORY": MODEL_DATA_S3_URI,
-                },
+                # No Environment needed for XGBoost built-in algorithm
+                # The container handles inference natively
             },
             ExecutionRoleArn=ROLE_ARN,
         )
