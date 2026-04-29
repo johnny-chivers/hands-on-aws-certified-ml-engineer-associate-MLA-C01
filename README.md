@@ -8,7 +8,7 @@ This course, youtube video, revision/exam guide, and/or slide deck for the AWS C
 
 This github contains the code for the [youtube video](https://www.youtube.com/watch?v=REPLACE_WITH_VIDEO_ID). The youtube video acts as a revision aid for the AWS Certified Machine Learning Engineer - Associate (MLA-C01) certification exam. The repo contains the code alongside a detailed README that gives definitions of the AWS services and other areas of knowledge required for the certification.
 
-[AWS Machine Learning Engineer - Associate MLA-C01 Revision Guide](https://www.johnnychivers.co.uk/REPLACE_WITH_LINK)
+[AWS Machine Learning Engineer - Associate MLA-C01 Revision Guide](https://johnny-chivers.kit.com/67c523d155)
 
 [Knowza.ai Practice Exams](https://knowza.ai)
 
